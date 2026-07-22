@@ -181,5 +181,4 @@ export interface IContractsStore {
   activeChain: IChain | null;
   contractIndex: number;
   timeList: ITime[];
-  withdrawalListTime: number;
 }

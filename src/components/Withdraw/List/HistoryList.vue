@@ -9,9 +9,12 @@ import {watch} from 'vue';
 const contractsStore = useContractsStore();
 
 /*Watchers*/
-watch(() => contractsStore.withdrawalListTime, () => {
-  contractsStore.updateHistoryList();
-});
+watch(
+  () => contractsStore.daysOffset,
+  () => {
+    contractsStore.updateHistoryList();
+  }
+);
 </script>
 
 <template>
@@ -41,7 +44,7 @@ watch(() => contractsStore.withdrawalListTime, () => {
       <select
         id="days"
         class="history__selector--select"
-        v-model="contractsStore.withdrawalListTime"
+        v-model="contractsStore.daysOffset"
         :disabled="contractsStore.loading.history"
       >
         <option v-for="time in contractsStore.timeList" :value="time.value">

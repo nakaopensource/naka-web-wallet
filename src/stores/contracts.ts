@@ -139,7 +139,7 @@ export const useContractsStore = defineStore('contracts', {
     blocksOffset: 5000,
     completedWithdrawals: [],
     cancelledWithdrawals: [],
-    daysOffset: (Date.now() - new Date().setHours(0, 0, 0, 0)) / 36e5 / 24,
+    daysOffset: TODAY_TIME,
     thresholdPrompt: '',
     rpc: {
       name: '',
@@ -183,8 +183,7 @@ export const useContractsStore = defineStore('contracts', {
         text: 'This year',
         value: THIS_YEAR_DAYS + TODAY_TIME
       }
-    ],
-    withdrawalListTime: TODAY_TIME
+    ]
   }),
   getters: {
     amountDecimals: (state): string => {
@@ -326,7 +325,6 @@ export const useContractsStore = defineStore('contracts', {
         return;
       }
       this.resetWithdrawalsList();
-      this.daysOffset = this.withdrawalListTime;
       this.getWithdrawalHistory();
     },
 
@@ -527,8 +525,7 @@ export const useContractsStore = defineStore('contracts', {
       this.vaultContract = null;
       this.factoryContract = [];
       this.vaultBalance = null;
-      this.daysOffset =
-        (Date.now() - new Date().setHours(0, 0, 0, 0)) / 36e5 / 24;
+      this.daysOffset = TODAY_TIME;
       sessionStorage.removeItem('firstSign');
       this.resetWithdrawalsList();
     },
