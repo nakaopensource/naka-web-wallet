@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import {useContractsStore} from '@/stores/contracts.ts';
-import {onMounted} from 'vue';
 import Modal from '@/components/UI/Modal.vue';
 import ConnectedWallet from '@/components/Withdraw/Form/ConnectedWallet.vue';
 import ExternalWallet from '@/components/Withdraw/Form/ExternalWallet.vue';
@@ -69,9 +68,7 @@ const closeOvertimeModal = () => {
 </script>
 
 <template>
-  <!-- Modal -->
-
-  <!-- Connected wallet -->
+  <!-- Connected wallet modal -->
   <Modal
     class="modal__withdraw--connected"
     wrapClass="modal__withdraw--wrap"
@@ -82,7 +79,7 @@ const closeOvertimeModal = () => {
     <ConnectedWallet />
   </Modal>
 
-  <!-- External wallet -->
+  <!-- External wallet modal -->
   <Modal
     class="modal__withdraw--connected modal__withdraw--external"
     wrapClass="modal__withdraw--wrap"
@@ -93,7 +90,7 @@ const closeOvertimeModal = () => {
     <ExternalWallet />
   </Modal>
 
-  <!-- Complete withdraw -->
+  <!-- Complete withdraw modal -->
   <Modal
     :closeModal="closeCompleteWithdrawModal"
     wrapClass="modal__withdraw--wrap-complete"
@@ -121,7 +118,7 @@ const closeOvertimeModal = () => {
     </div>
   </Modal>
 
-  <!-- Cancel withdraw -->
+  <!-- Cancel withdraw modal -->
   <Modal
     :closeModal="closeCancelWithdrawModal"
     wrapClass="modal__withdraw--wrap-complete"
@@ -149,7 +146,7 @@ const closeOvertimeModal = () => {
     </div>
   </Modal>
 
-  <!-- Overtime withdraw -->
+  <!-- Overtime withdraw modal -->
   <Modal
     :closeModal="closeOvertimeModal"
     wrapClass="modal__withdraw--wrap-complete modal__withdraw--wrap-overtime"

@@ -3,7 +3,7 @@ import polygonRegistryAbi from '@/assets/abi/PolygonVaultRegistry.json';
 import avaxVaultAbi from '@/assets/abi/AvaxVault.json';
 import avaxRegistryAbi from '@/assets/abi/AvaxVaultRegistry.json';
 
-export enum NetworkEnum {
+export enum Network {
   ETHEREUM = 0,
   GOERLI = 5,
   OPTIMISM = 10,
@@ -13,7 +13,8 @@ export enum NetworkEnum {
   FANTOM_OPERA = 250,
   MEGA = 6342,
   ARBITRUM = 42151,
-  AVALANCHE = 43114
+  AVALANCHE = 43114,
+  AMOY = 80002
 }
 
 export const NETWORKS = {
@@ -60,7 +61,7 @@ export const NETWORKS = {
     icon: './img/icons/fantom-ftm-logo.png'
   },
   6342: {
-    id: 'mega', // custom or unknown, fallback name
+    id: 'mega',
     symbol: 'MEGA',
     name: 'Mega Testnet',
     icon: './img/icons/bitcoin-btc-logo.png'
@@ -78,13 +79,13 @@ export const NETWORKS = {
     icon: './img/icons/avalanche-avax-logo.png'
   },
   59141: {
-    id: 'linea', // not listed on CoinGecko; placeholder
+    id: 'linea',
     symbol: 'ETH',
     name: 'Linea Testnet',
     icon: './img/icons/ethereum-eth-logo.png'
   },
   59144: {
-    id: 'linea', // not listed on CoinGecko; placeholder
+    id: 'linea',
     symbol: 'ETH',
     name: 'Linea Mainnet',
     icon: './img/icons/ethereum-eth-logo.png'
@@ -96,7 +97,7 @@ export const NETWORKS = {
     icon: './img/icons/polygon-matic-logo.png'
   },
   80002: {
-    id: 'polygon', // CoinGecko uses "polygon" for Amoy too
+    id: 'polygon',
     symbol: 'POL',
     name: 'Amoy Testnet',
     icon: './img/icons/polygon-matic-logo.png'
@@ -167,7 +168,7 @@ export const CHAINS = [
     //Polygon
     id: 137,
     hexId: polygonMainnet.chainId,
-    contract: [
+    contracts: [
       POLYGON_CONTRACT_ADDRESS_PRODUCTION,
       POLYGON_CONTRACT_ADDRESS_PRODUCTION_ISSUER_1
     ],
@@ -207,7 +208,7 @@ export const CHAINS = [
     /*Avalanche*/
     id: 43114,
     hexId: avalancheMainnet.chainId,
-    contract: [AVAX_CONTRACT_ADDRESS_PRODUCTION],
+    contracts: [AVAX_CONTRACT_ADDRESS_PRODUCTION],
     name: 'Avalanche (C-Chain)',
     gas: 'https://cdn.routescan.io/api/evm/43114/gas-price?',
     vaultAbi: avaxVaultAbi,
@@ -257,8 +258,10 @@ export const CHAINS = [
 export const POLYGON_USDT_ADDRESS_STAGING =
   '0x5DC14a664d551F24e9f7A4C9c6215a84E44f0f1E';
 
-export const TODAY_TIME = (Date.now() - new Date().setHours(0, 0, 0, 0)) / 36e5 / 24;
+export const TODAY_TIME =
+  (Date.now() - new Date().setHours(0, 0, 0, 0)) / 36e5 / 24;
+
 export const THIS_YEAR_DAYS = Math.floor(
-    (new Date().getTime() - new Date(new Date().getFullYear(), 0, 1).getTime()) /
+  (new Date().getTime() - new Date(new Date().getFullYear(), 0, 1).getTime()) /
     (1000 * 60 * 60 * 24)
 );

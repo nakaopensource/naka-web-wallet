@@ -1,6 +1,7 @@
 import {defineStore} from 'pinia';
 import type {
   IActiveNetwork,
+  IChain,
   IConnectedForm,
   IContractsErrors,
   IContractsForms,
@@ -9,6 +10,7 @@ import type {
   IContractsStore,
   IContractsWallets,
   IExternalForm,
+  IRpc,
   IWallet,
   IWithdrawal
 } from '@/types/contracts.ts';
@@ -90,7 +92,8 @@ export const useContractsStore = defineStore('contracts', {
       withdrawExternal: false,
       cancelWithdraw: false,
       completeWithdraw: false,
-      overtime: false
+      overtime: false,
+      rpc: false
     },
     withdrawals: [],
     form: {
@@ -124,7 +127,7 @@ export const useContractsStore = defineStore('contracts', {
       connected: false,
       externalAddress: false
     },
-    factoryContract: [],
+    factoryContracts: [],
     vaultContract: null,
     transactionGas: {
       gas: 0,
@@ -250,6 +253,14 @@ export const useContractsStore = defineStore('contracts', {
 
       /** Set initial rpc list */
       this.rpc = this.activeChain.rpcs[0];
+    },
+
+    addRpc(rpc: IRpc) {
+      this.activeChain = {
+        ...this.activeChain,
+        rpcs: [...this.activeChain.rpcs, rpc]
+      };
+      this.rpc = rpc;
     },
 
     updateLoading(loader: Partial<IContractsLoading>) {
@@ -523,7 +534,7 @@ export const useContractsStore = defineStore('contracts', {
         usdt: 0
       };
       this.vaultContract = null;
-      this.factoryContract = [];
+      this.factoryContracts = [];
       this.vaultBalance = null;
       this.daysOffset = TODAY_TIME;
       sessionStorage.removeItem('firstSign');
@@ -556,7 +567,6 @@ export const useContractsStore = defineStore('contracts', {
         this.resetConnectedForm();
         this.resetExternalForm();
 
-        /*TODO: Uncomment and remove upper part if multiple networks are allowed*/
         /** Update chain id (network) -> The chainId that gets passed through chainChanged event is of type string and a hex format (0x...). We need to parse it to an integer in order to properly map it to its name */
         this.updateChain(chainId);
 
@@ -1015,7 +1025,7 @@ export const useContractsStore = defineStore('contracts', {
 
     async getActiveRequest() {
       if (
-        !this.factoryContract.length ||
+        !this.factoryContracts.length ||
         !this.vaultContract ||
         !this.web3 ||
         !this.activeChain
@@ -1039,7 +1049,7 @@ export const useContractsStore = defineStore('contracts', {
 
         /** Fetch a lock duration of the withdrawal request from the factory contract */
         const lockDuration: bigint =
-          await this.factoryContract[this.contractIndex].methods[
+          await this.factoryContracts[this.contractIndex].methods[
             this.activeChain.reservationLockCall
           ]().call();
 
@@ -1319,7 +1329,7 @@ export const useContractsStore = defineStore('contracts', {
     },
 
     async getWithdrawalHistory() {
-      if (!this.vaultContract || !this.factoryContract.length || !this.web3) {
+      if (!this.vaultContract || !this.factoryContracts.length || !this.web3) {
         return;
       }
 
@@ -1419,7 +1429,7 @@ export const useContractsStore = defineStore('contracts', {
       }
 
       /** Initialize factory contract by providing the registry ABI and the factory contract's address to the contract class then save it to the global state */
-      this.factoryContract = this.activeChain.contract.map((factory) => {
+      this.factoryContracts = this.activeChain.contracts.map((factory) => {
         return new this.web3!.eth.Contract(
           this.activeChain!.registryAbi,
           factory
@@ -1431,7 +1441,7 @@ export const useContractsStore = defineStore('contracts', {
       try {
         /** Check if the currently connected wallet address already created a Vault smart contract. Stop propagation if so, otherwise create a new Vault smart contract. */
         const available = (await Promise.all(
-          this.factoryContract.map(async (factory) => ({
+          this.factoryContracts.map(async (factory) => ({
             factory: factory,
             vaultAddress: await factory.methods
               .getVaultAddressByOwner(this.connectedAccount)
@@ -1469,13 +1479,13 @@ export const useContractsStore = defineStore('contracts', {
 
         /** Fetch estimated gas */
         await this.getEstimatedGas(
-          this.factoryContract[this.contractIndex],
+          this.factoryContracts[this.contractIndex],
           'createVault',
           [this.connectedAccount]
         );
 
         /** Make a request to "createVault" method on the factory contract to create a new Vault contract that will connect to the wallet address and the user will be able to withdraw funds from */
-        const factoryTransaction = await this.factoryContract[
+        const factoryTransaction = await this.factoryContracts[
           this.contractIndex
         ].methods
           .createVault(this.connectedAccount)
