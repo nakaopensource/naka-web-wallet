@@ -1,7 +1,6 @@
 import {defineStore} from 'pinia';
 import type {
   IActiveNetwork,
-  IChain,
   IConnectedForm,
   IContractsErrors,
   IContractsForms,
@@ -736,6 +735,8 @@ export const useContractsStore = defineStore('contracts', {
         return;
       }
 
+      console.log('estimate gas: ', method, contract);
+
       try {
         /** Estimate gas needed for specific method */
         const estimatedGas = await (contract as Contract<ContractAbi>).methods[
@@ -822,6 +823,20 @@ export const useContractsStore = defineStore('contracts', {
         return;
       }
 
+      /** Update method based on the current chain and token used. In case of AVAX with USDC call withdraw directly */
+      const currentTokenName = this.activeChain.currencies.find(
+        (currency) => currency.value === this.currencyToken
+      )?.name;
+      let method = 'withdrawRequest';
+      console.log('current token: ', currentTokenName);
+
+      if (
+        this.activeChain.hexId === avalancheMainnet.chainId &&
+        currentTokenName === 'USDC'
+      ) {
+        method = 'withdraw';
+      }
+
       /** Init loading */
       this.updateLoading({withdrawConnected: true});
 
@@ -829,38 +844,56 @@ export const useContractsStore = defineStore('contracts', {
         /** On amount screen call the "withdrawRequest" method from the Vault SC. On success the withdraw request is pending for an hour before the user can complete it */
         if (this.wallets.connected.step === 1) {
           /** Fetch estimated gas */
-          await this.getEstimatedGas(this.vaultContract, 'withdrawRequest', [
+          await this.getEstimatedGas(this.vaultContract, method, [
             this.currencyToken,
             this.connectedAccount,
             formatNumberToUint256(this.form.connected.amount.value)
           ]);
 
           /** Make a withdrawal request to Vault SC */
-          await this.vaultContract.methods
-            .withdrawRequest(
-              this.currencyToken,
-              this.connectedAccount,
-              formatNumberToUint256(this.form.connected.amount.value)
-            )
-            .send({
-              from: this.connectedAccount,
-              gas: `${this.transactionGas.gas}`,
-              maxFeePerGas: `${this.transactionGas.maxFeePerGas}`,
-              maxPriorityFeePerGas: `${this.transactionGas.maxPriorityFeePerGas}`
-            });
+          await this.vaultContract.methods[method](
+            this.currencyToken,
+            this.connectedAccount,
+            formatNumberToUint256(this.form.connected.amount.value)
+          ).send({
+            from: this.connectedAccount,
+            gas: `${this.transactionGas.gas}`,
+            maxFeePerGas: `${this.transactionGas.maxFeePerGas}`,
+            maxPriorityFeePerGas: `${this.transactionGas.maxPriorityFeePerGas}`
+          });
 
           /** Proceed to the next step */
-          this.updateWallet('connected', {step: 2});
+          if (method === 'withdrawRequest') {
+            this.updateWallet('connected', {step: 2});
+          }
 
           /** Update global state for Vault balance */
           await this.getVaultBalance();
-          return;
+
+          if (method === 'withdrawRequest') {
+            return;
+          }
         }
 
         /** Close the modal and reset the form  */
         this.updateModal({withdrawConnected: false});
         this.updateFormField(null, 'connected', 'amount');
         this.updateWallet('connected', {step: 1});
+
+        if (method === 'withdraw') {
+          bottomToast(
+            `Withdraw to: ${this.connectedAccount.substring(
+              0,
+              4
+            )}...${this.connectedAccount.slice(
+              -4
+            )} has been successfully completed.`,
+            3000,
+            'toast__wide toast__withdrawal'
+          );
+          this.resetWithdrawalsList();
+        }
+
         await this.getWithdrawalHistory();
       } catch (error) {
         console.error('Error submitting form: ', (error as Error).message);
@@ -900,6 +933,20 @@ export const useContractsStore = defineStore('contracts', {
         return;
       }
 
+      /** Update method based on the current chain and token used. In case of AVAX with USDC call withdraw directly */
+      const currentTokenName = this.activeChain.currencies.find(
+        (currency) => currency.value === this.currencyToken
+      )?.name;
+      let method = 'withdrawRequest';
+      console.log('current token: ', currentTokenName);
+
+      if (
+        this.activeChain.hexId === avalancheMainnet.chainId &&
+        currentTokenName === 'USDC'
+      ) {
+        method = 'withdraw';
+      }
+
       /** Init loading */
       this.updateLoading({withdrawExternal: true});
 
@@ -913,34 +960,35 @@ export const useContractsStore = defineStore('contracts', {
 
         if (this.wallets.external.step === 2) {
           /** Fetch estimated gas */
-          await this.getEstimatedGas(this.vaultContract, 'withdrawRequest', [
+          await this.getEstimatedGas(this.vaultContract, method, [
             this.currencyToken,
             this.web3.utils.toChecksumAddress(this.form.external.address.value),
             formatNumberToUint256(this.form.external.amount.value)
           ]);
 
           /** Make a withdrawal request to Vault SC */
-          await this.vaultContract.methods
-            .withdrawRequest(
-              this.currencyToken,
-              this.web3.utils.toChecksumAddress(
-                this.form.external.address.value
-              ),
-              formatNumberToUint256(this.form.external.amount.value)
-            )
-            .send({
-              from: this.connectedAccount,
-              gas: `${this.transactionGas.gas}`,
-              maxFeePerGas: `${this.transactionGas.maxFeePerGas}`,
-              maxPriorityFeePerGas: `${this.transactionGas.maxPriorityFeePerGas}`
-            });
+          await this.vaultContract.methods[method](
+            this.currencyToken,
+            this.web3.utils.toChecksumAddress(this.form.external.address.value),
+            formatNumberToUint256(this.form.external.amount.value)
+          ).send({
+            from: this.connectedAccount,
+            gas: `${this.transactionGas.gas}`,
+            maxFeePerGas: `${this.transactionGas.maxFeePerGas}`,
+            maxPriorityFeePerGas: `${this.transactionGas.maxPriorityFeePerGas}`
+          });
 
           /** Proceed to the next step */
-          this.updateWallet('external', {step: 3});
+          if (method === 'withdrawRequest') {
+            this.updateWallet('external', {step: 3});
+          }
 
           /** Update global state for Vault balance */
           await this.getVaultBalance();
-          return;
+
+          if (method === 'withdrawRequest') {
+            return;
+          }
         }
 
         /** Close the modal and reset the form  */
@@ -948,6 +996,21 @@ export const useContractsStore = defineStore('contracts', {
         this.updateFormField(null, 'external', 'amount');
         this.updateFormField('', 'external', 'address');
         this.updateWallet('external', {step: 1});
+
+        if (method === 'withdraw') {
+          bottomToast(
+            `Withdraw to: ${this.connectedAccount.substring(
+              0,
+              4
+            )}...${this.connectedAccount.slice(
+              -4
+            )} has been successfully completed.`,
+            3000,
+            'toast__wide toast__withdrawal'
+          );
+          this.resetWithdrawalsList();
+        }
+
         await this.getWithdrawalHistory();
       } catch (error) {
         console.error('Error submitting form: ', (error as Error).message);
