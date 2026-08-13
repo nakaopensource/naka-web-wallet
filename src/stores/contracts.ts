@@ -749,15 +749,11 @@ export const useContractsStore = defineStore('contracts', {
         return;
       }
 
-      console.log('method: ', method, contract);
-
       try {
         /** Estimate gas needed for specific method */
         const estimatedGas = await (contract as Contract<ContractAbi>).methods[
           method
         ](...args).estimateGas({from: this.connectedAccount});
-
-        console.log('estimated gas: ', estimatedGas);
 
         /** Fetch the fee history of the last 5 blocks */
         const feeHistory = await this.provider.request({
@@ -1727,7 +1723,6 @@ export const useContractsStore = defineStore('contracts', {
       this.updateLoading({cancelWithdraw: true});
 
       try {
-        console.log('currency token: ', this.currencyToken);
         /** Fetch estimated gas */
         await this.getEstimatedGas(
           this.vaultContract,
