@@ -30,7 +30,9 @@ import type {
   IBlock,
   ICancelledWithdrawReservationData,
   IReservation,
+  IVaultBalance,
   IVaultEvent,
+  IWhitelistedToken,
   IWithdrawRequestData
 } from '@/types/vault.ts';
 import {
@@ -255,6 +257,10 @@ export const useContractsStore = defineStore('contracts', {
     },
 
     addRpc(rpc: IRpc) {
+      if (!this.activeChain) {
+        return;
+      }
+
       this.activeChain = {
         ...this.activeChain,
         rpcs: [...this.activeChain.rpcs, rpc]
@@ -672,7 +678,11 @@ export const useContractsStore = defineStore('contracts', {
               name: 'USDC',
               value:
                 this.activeChain.currencies.find((item) => item.name === 'USDC')
-                  ?.value || ''
+                  ?.value || '',
+              id:
+                this.activeChain.currencies.find(
+                  (currency) => currency.name === 'USDC'
+                )?.id ?? 0
             }
           ];
         }
@@ -690,7 +700,11 @@ export const useContractsStore = defineStore('contracts', {
               value:
                 this.activeChain.currencies.find(
                   (item) => item.name === 'XAUT0'
-                )?.value || ''
+                )?.value || '',
+              id:
+                this.activeChain.currencies.find(
+                  (currency) => currency.name === 'XAUT0'
+                )?.id ?? 0
             }
           ];
         }
@@ -735,13 +749,15 @@ export const useContractsStore = defineStore('contracts', {
         return;
       }
 
-      console.log('estimate gas: ', method, contract);
+      console.log('method: ', method, contract);
 
       try {
         /** Estimate gas needed for specific method */
         const estimatedGas = await (contract as Contract<ContractAbi>).methods[
           method
         ](...args).estimateGas({from: this.connectedAccount});
+
+        console.log('estimated gas: ', estimatedGas);
 
         /** Fetch the fee history of the last 5 blocks */
         const feeHistory = await this.provider.request({
@@ -828,7 +844,6 @@ export const useContractsStore = defineStore('contracts', {
         (currency) => currency.value === this.currencyToken
       )?.name;
       let method = 'withdrawRequest';
-      console.log('current token: ', currentTokenName);
 
       if (
         this.activeChain.hexId === avalancheMainnet.chainId &&
@@ -938,7 +953,6 @@ export const useContractsStore = defineStore('contracts', {
         (currency) => currency.value === this.currencyToken
       )?.name;
       let method = 'withdrawRequest';
-      console.log('current token: ', currentTokenName);
 
       if (
         this.activeChain.hexId === avalancheMainnet.chainId &&
@@ -1097,18 +1111,52 @@ export const useContractsStore = defineStore('contracts', {
       }
 
       try {
-        /** Fetch the reserved withdrawal request amount and unlock time from the smart contract */
-        const reservationStatus: IReservation =
-          await this.vaultContract.methods[
-            this.activeChain.reservationCall
-          ]().call();
-        const reservationAmount = Number(reservationStatus.amount);
+        /** Fetch withdraw requests from the WithdrawRequest event */
+        await this.getWithdrawRequests();
 
-        /** When there are no reserved funds reset the active request and stop propagation */
-        if (reservationAmount <= 0) {
-          this.activeRequest = null;
+        /** Take the latest WithdrawalRequest event as the active request */
+        const latestRequest = this.withdrawalRequests?.at(-1);
+
+        const whitelistedTokens: string[] =
+          await this.factoryContracts[this.contractIndex].methods[
+            'getAllAvailableWhitelistedTokens'
+          ]().call();
+
+        /** Initialize token ID */
+        let latestTokenId = 0;
+
+        /** Initialize latest reserved amount */
+        let latestReservedAmount = 0;
+
+        if (latestRequest) {
+          /** Map the token index from the list of whitelisted tokens based on the token from the latest request event */
+          const tokenIndex =
+            whitelistedTokens.indexOf(latestRequest.returnValues.token) ?? 0;
+
+          /** Get the data about the reserved token - we're looking for token id here which is of uint16 structure */
+          const latestWhitelistedToken: IWhitelistedToken =
+            await this.factoryContracts[this.contractIndex].methods[
+              'getAvailableWhitelistedTokenByIndex'
+            ](tokenIndex).call();
+
+          /** Convert bigint to number to then pass to the balances method */
+          latestTokenId = Number(latestWhitelistedToken.tokenId);
+
+          /** Call the method based on the reserved token id. Should the withdrawalReservation amount be bigger than zero we know we have some amount reserved */
+          const tokenData: IVaultBalance =
+            await this.vaultContract.methods[
+              'getPaymentTokenBalancesByTokenId'
+            ](latestTokenId).call();
+          latestReservedAmount = Number(tokenData.withdrawalReservation);
+        }
+
+        /** Stop propagation if no amount is reserved */
+        if (!latestReservedAmount || !latestRequest) {
           return;
         }
+
+        /** Fetch the reserved withdrawal request amount and unlock time from the smart contract */
+        const reservationAmount = Number(latestRequest.returnValues.amount);
 
         /** Fetch a lock duration of the withdrawal request from the factory contract */
         const lockDuration: bigint =
@@ -1116,26 +1164,21 @@ export const useContractsStore = defineStore('contracts', {
             this.activeChain.reservationLockCall
           ]().call();
 
-        /** Check if more than time has passed than the amount of lock duration, which means the request is ready to be completed by the user */
-        const thresholdPassed =
-          Date.now() > Number(reservationStatus.unlockTime) * 1000;
-
-        /** Fetch withdraw requests from the WithdrawRequest event */
-        await this.getWithdrawRequests();
-
-        /** Take the latest WithdrawalRequest event as the active request */
-        const latestRequest = this.withdrawalRequests?.at(-1);
-
-        /** If for whatever reason the public indexer doesn't work, open a prompt notifying the user he has an outstanding withdrawal request */
-        if (!latestRequest && thresholdPassed) {
-          this.thresholdPrompt =
-            'We have detected you have an outstanding withdrawal request. Please note that a small gas fee is required to cancel your withdrawal.';
-          this.updateModal({overtime: true});
+        /** When there are no reserved funds reset the active request and stop propagation */
+        if (reservationAmount <= 0) {
+          this.activeRequest = null;
           return;
         }
 
-        /** In case there is no withdrawal request, stop propagation */
-        if (!latestRequest) {
+        /** Check if more than time has passed than the amount of lock duration, which means the request is ready to be completed by the user */
+        const thresholdPassed =
+          Date.now() > Number(latestRequest.returnValues.unlockTime) * 1000;
+
+        /** If for whatever reason the public indexer doesn't work, open a prompt notifying the user he has an outstanding withdrawal request */
+        if (thresholdPassed && !latestRequest) {
+          this.thresholdPrompt =
+            'We have detected you have an outstanding withdrawal request. Please note that a small gas fee is required to cancel your withdrawal.';
+          this.updateModal({overtime: true});
           return;
         }
 
@@ -1164,12 +1207,14 @@ export const useContractsStore = defineStore('contracts', {
         /** By default, the unlockTime fetched from the SC is of type bigint. Once converted to the number it shows the time in seconds. First we need to multiply it with 1000 to convert it to milliseconds, then we can use Date to mutate it */
         this.activeRequest = {
           address: `${decodedInput[1]}`, //Recipients address
-          amount: formatUint256toNumber(reservationStatus.amount),
+          amount: formatUint256toNumber(latestRequest.returnValues.amount),
           date: new Date(
-            (Number(reservationStatus.unlockTime) - Number(lockDuration)) * 1000
+            (Number(latestRequest.returnValues.unlockTime) -
+              Number(lockDuration)) *
+              1000
           ),
           status:
-            Number(reservationStatus.unlockTime) * 1000 < Date.now()
+            Number(latestRequest.returnValues.unlockTime) * 1000 < Date.now()
               ? 'ready'
               : 'pending',
           token: latestRequest.returnValues.token
@@ -1608,6 +1653,9 @@ export const useContractsStore = defineStore('contracts', {
         return;
       }
 
+      /** Set currency token */
+      this.currencyToken = this.activeRequest.token;
+
       /** Init loading */
       this.updateLoading({withdraw: true});
 
@@ -1666,15 +1714,20 @@ export const useContractsStore = defineStore('contracts', {
       if (
         this.loading.cancelWithdraw ||
         !this.vaultContract ||
-        !this.transactionGas
+        !this.transactionGas ||
+        !this.activeRequest
       ) {
         return;
       }
+
+      /** Set currency token */
+      this.currencyToken = this.activeRequest.token;
 
       /** Init loading */
       this.updateLoading({cancelWithdraw: true});
 
       try {
+        console.log('currency token: ', this.currencyToken);
         /** Fetch estimated gas */
         await this.getEstimatedGas(
           this.vaultContract,

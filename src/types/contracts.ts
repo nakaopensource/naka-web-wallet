@@ -114,6 +114,7 @@ export interface IRpc {
 export interface IToken {
   name: string;
   value: string;
+  id: number;
 }
 
 export interface ICurrency {

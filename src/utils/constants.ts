@@ -192,15 +192,18 @@ export const CHAINS = [
     currencies: [
       {
         name: 'USDT0',
-        value: '0xc2132d05d31c914a87c6611c10748aeb04b58e8f'
+        value: '0xc2132d05d31c914a87c6611c10748aeb04b58e8f',
+        id: 36495
       },
       {
         name: 'USDC',
-        value: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359'
+        value: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359',
+        id: 13145
       },
       {
         name: 'XAUT0',
-        value: '0xf1815bd50389c46847f0bda824ec8da914045d14'
+        value: '0xf1815bd50389c46847f0bda824ec8da914045d14',
+        id: 23828
       }
     ]
   },
@@ -241,15 +244,18 @@ export const CHAINS = [
     currencies: [
       {
         name: 'USDT',
-        value: '0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7'
+        value: '0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7',
+        id: 43207
       },
       {
         name: 'USDC',
-        value: '0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E'
+        value: '0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E',
+        id: 35438
       },
       {
         name: 'XAUT0',
-        value: '0x2775d5105276781B4b85bA6eA6a6653bEeD1dd32'
+        value: '0x2775d5105276781B4b85bA6eA6a6653bEeD1dd32',
+        id: 56626
       }
     ]
   }

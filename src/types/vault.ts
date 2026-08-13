@@ -1,6 +1,7 @@
 export interface IVaultBalance {
   availableBalance: bigint;
   balance: bigint;
+  frozenPaymentTokenAmount?: bigint;
   processPaymentReservation: bigint;
   withdrawalReservation: bigint;
 }
@@ -99,4 +100,9 @@ export interface ITransactionReceipt {
   transactionHash: string;
   transactionIndex: bigint;
   type: bigint;
+}
+
+export interface IWhitelistedToken {
+  tokenAddress: string;
+  tokenId: bigint;
 }
