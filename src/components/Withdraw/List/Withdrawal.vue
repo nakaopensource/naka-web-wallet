@@ -62,7 +62,7 @@ const openCancelModal = () => {
       </div>
       <div class="withdrawal__details">
         <span class="withdrawal__details--address">
-          Withdraw: {{ props.withdrawal.address }}
+          Withdraw: {{ props.withdrawal.address || 'Unknown recipient' }}
         </span>
         <div class="withdrawal__details--date">
           {{ localizeDateTime(props.withdrawal.date) }}

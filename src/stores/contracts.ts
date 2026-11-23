@@ -1151,6 +1151,8 @@ export const useContractsStore = defineStore('contracts', {
       }
 
       try {
+        this.activeRequest = null;
+
         /** Fetch withdraw requests from the WithdrawRequest event */
         await this.getWithdrawRequests();
 
@@ -1255,18 +1257,17 @@ export const useContractsStore = defineStore('contracts', {
           latestRequest.returnValues.amount
         );
 
-        /** Never build an active request with an address we couldn't verify */
+        /** Keep the request (so it can be cancelled) but block completing without a verified recipient */
         if (!recipient) {
           console.error(
             'Could not find recipient for withdraw request',
             latestRequest.transactionHash
           );
-          return;
         }
 
         /** By default, the unlockTime fetched from the SC is of type bigint. Once converted to the number it shows the time in seconds. First we need to multiply it with 1000 to convert it to milliseconds, then we can use Date to mutate it */
         this.activeRequest = {
-          address: recipient, // Recipient's address
+          address: recipient ?? '',
           amount: formatUint256toNumber(latestRequest.returnValues.amount),
           date: new Date(
             (Number(latestRequest.returnValues.unlockTime) -
@@ -1341,11 +1342,15 @@ export const useContractsStore = defineStore('contracts', {
           await this.getWithdrawRequests();
         }
 
-        const cancelledRequest = this.withdrawalRequests.find(
-          (item) =>
-            amount === BigInt(item.returnValues.amount) &&
-            token.toLowerCase() === item.returnValues.token.toLowerCase()
-        );
+        const cancelledRequest = this.withdrawalRequests
+          .filter(
+            (item) =>
+              BigInt(item.blockNumber) <=
+                BigInt(transactionReceipt.blockNumber) &&
+              amount === BigInt(item.returnValues.amount) &&
+              token.toLowerCase() === item.returnValues.token.toLowerCase()
+          )
+          .at(-1);
 
         /** Throw an error if no compatible request is found */
         if (!cancelledRequest) {
@@ -1713,6 +1718,13 @@ export const useContractsStore = defineStore('contracts', {
 
     async completeWithdraw() {
       if (!this.vaultContract || this.loading.withdraw || !this.activeRequest) {
+        return;
+      }
+
+      if (!this.activeRequest.address) {
+        toast.error(
+          'Could not verify the recipient of this request. Please cancel it and create a new one.'
+        );
         return;
       }
 
