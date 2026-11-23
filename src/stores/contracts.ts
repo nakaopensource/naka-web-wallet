@@ -744,6 +744,45 @@ export const useContractsStore = defineStore('contracts', {
       }
     },
 
+    extractWithdrawRequestRecipient(
+      input: string,
+      token: string,
+      amount: bigint
+    ): string | null {
+      if (!this.web3) return null;
+
+      const selector = this.web3.eth.abi
+        .encodeFunctionSignature('withdrawRequest(address,address,uint256)')
+        .slice(2)
+        .toLowerCase();
+      const data = input.toLowerCase().replace(/^0x/, '');
+
+      for (
+        let i = data.indexOf(selector);
+        i !== -1;
+        i = data.indexOf(selector, i + 1)
+      ) {
+        if (i % 2 !== 0) continue; // must start on a byte boundary
+        const args = data.slice(i + 8, i + 8 + 192); // 3 × 32 bytes
+        if (args.length !== 192) continue;
+        try {
+          const d = this.web3.eth.abi.decodeParameters(
+            ['address', 'address', 'uint256'],
+            '0x' + args
+          );
+          if (
+            String(d[0]).toLowerCase() === token.toLowerCase() &&
+            BigInt(d[2] as bigint) === BigInt(amount)
+          ) {
+            return String(d[1]);
+          }
+        } catch {
+          /* not a real match, keep scanning */
+        }
+      }
+      return null;
+    },
+
     async getEstimatedGas(
       contract: unknown,
       method: string,
@@ -1210,15 +1249,24 @@ export const useContractsStore = defineStore('contracts', {
           return;
         }
 
-        /** Decode the parameters in abi in order to access the recipient address. withdrawRequest takes in three arguments - token address, recipient's address and an amount. */
-        const decodedInput = this.web3.eth.abi.decodeParameters(
-          ['address', 'address', 'uint256'],
-          '0x' + activeRequestTransaction.input.slice(10)
+        const recipient = this.extractWithdrawRequestRecipient(
+          activeRequestTransaction.input,
+          latestRequest.returnValues.token,
+          latestRequest.returnValues.amount
         );
+
+        /** Never build an active request with an address we couldn't verify */
+        if (!recipient) {
+          console.error(
+            'Could not find recipient for withdraw request',
+            latestRequest.transactionHash
+          );
+          return;
+        }
 
         /** By default, the unlockTime fetched from the SC is of type bigint. Once converted to the number it shows the time in seconds. First we need to multiply it with 1000 to convert it to milliseconds, then we can use Date to mutate it */
         this.activeRequest = {
-          address: `${decodedInput[1]}`, //Recipients address
+          address: recipient, // Recipient's address
           amount: formatUint256toNumber(latestRequest.returnValues.amount),
           date: new Date(
             (Number(latestRequest.returnValues.unlockTime) -
@@ -1285,8 +1333,8 @@ export const useContractsStore = defineStore('contracts', {
         );
 
         /** Set currency token and amount requested */
-        const token = decodedEvent.token;
-        const amount = decodedEvent.amount;
+        const token = String(decodedEvent.token);
+        const amount = BigInt(decodedEvent.amount as bigint);
 
         /** Search backwards for the withdrawRequest with the same token + amount (requires scanning past logs for WithdrawRequest events) */
         if (!this.withdrawalRequests.length) {
@@ -1295,8 +1343,8 @@ export const useContractsStore = defineStore('contracts', {
 
         const cancelledRequest = this.withdrawalRequests.find(
           (item) =>
-            amount === item.returnValues.amount &&
-            token === item.returnValues.token
+            amount === BigInt(item.returnValues.amount) &&
+            token.toLowerCase() === item.returnValues.token.toLowerCase()
         );
 
         /** Throw an error if no compatible request is found */
@@ -1309,15 +1357,18 @@ export const useContractsStore = defineStore('contracts', {
           cancelledRequest.transactionHash
         );
 
-        /** Get the decoded input of the transaction */
-        const decodedTransaction = this.web3.eth.abi.decodeParameters(
-          ['address', 'address', 'uint256'],
-          '0x' + cancelledTransaction.input.slice(10)
+        const recipient = this.extractWithdrawRequestRecipient(
+          cancelledTransaction.input,
+          token,
+          amount
         );
 
-        /** Return recipient's address and transaction hash */
+        if (!recipient) {
+          return;
+        }
+
         return {
-          recipient: decodedTransaction[1], // recipient from decoded WR transaction data
+          recipient,
           withdrawTxHash: cancelledRequest.transactionHash
         };
       } catch (error) {
