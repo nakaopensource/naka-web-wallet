@@ -721,10 +721,15 @@ export const useContractsStore = defineStore('contracts', {
           return;
         }
 
-        const balanceKey =
+        const balanceKey: 'avaliableBalance' | 'availableBalance' =
           this.activeChain.id === 137 ? 'avaliableBalance' : 'availableBalance';
         const converted = formatUint256toNumber(
-          this.vaultBalance[balanceKey as keyof typeof this.vaultBalance] ?? 0
+          (
+            this.vaultBalance as unknown as Record<
+              typeof balanceKey,
+              bigint | undefined
+            >
+          )[balanceKey] ?? 0n
         );
 
         this.contractBalance = {
@@ -1113,37 +1118,48 @@ export const useContractsStore = defineStore('contracts', {
         /** Take the latest WithdrawalRequest event as the active request */
         const latestRequest = this.withdrawalRequests?.at(-1);
 
-        const whitelistedTokens: string[] =
-          await this.factoryContracts[this.contractIndex].methods[
-            'getAllAvailableWhitelistedTokens'
-          ]().call();
-
-        /** Initialize token ID */
-        let latestTokenId = 0;
-
         /** Initialize latest reserved amount */
         let latestReservedAmount = 0;
 
         if (latestRequest) {
-          /** Map the token index from the list of whitelisted tokens based on the token from the latest request event */
-          const tokenIndex =
-            whitelistedTokens.indexOf(latestRequest.returnValues.token) ?? 0;
+          const factory = this.factoryContracts[this.contractIndex];
 
-          /** Get the data about the reserved token - we're looking for token id here which is of uint16 structure */
-          const latestWhitelistedToken: IWhitelistedToken =
-            await this.factoryContracts[this.contractIndex].methods[
-              'getAvailableWhitelistedTokenByIndex'
-            ](tokenIndex).call();
+          if (factory.methods['getAllAvailableWhitelistedTokens']) {
+            /** Multi-token vaults (Avalanche): look up the reservation by token id */
+            const whitelistedTokens: string[] =
+              await factory.methods[
+                'getAllAvailableWhitelistedTokens'
+              ]().call();
 
-          /** Convert bigint to number to then pass to the balances method */
-          latestTokenId = Number(latestWhitelistedToken.tokenId);
+            const tokenIndex = whitelistedTokens.findIndex(
+              (token) =>
+                token.toLowerCase() ===
+                latestRequest.returnValues.token.toLowerCase()
+            );
 
-          /** Call the method based on the reserved token id. Should the withdrawalReservation amount be bigger than zero we know we have some amount reserved */
-          const tokenData: IVaultBalance =
-            await this.vaultContract.methods[
+            if (tokenIndex === -1) {
+              return;
+            }
+
+            const latestWhitelistedToken: IWhitelistedToken =
+              await factory.methods['getAvailableWhitelistedTokenByIndex'](
+                tokenIndex
+              ).call();
+
+            const tokenData: IVaultBalance = await this.vaultContract.methods[
               'getPaymentTokenBalancesByTokenId'
-            ](latestTokenId).call();
-          latestReservedAmount = Number(tokenData.withdrawalReservation);
+            ](Number(latestWhitelistedToken.tokenId)).call();
+
+            latestReservedAmount = Number(tokenData.withdrawalReservation);
+          } else {
+            /** Single-token vaults (Polygon): read the reservation directly */
+            const reservation: IReservation =
+              await this.vaultContract.methods[
+                this.activeChain.reservationCall
+              ]().call();
+
+            latestReservedAmount = Number(reservation.amount);
+          }
         }
 
         /** Stop propagation if no amount is reserved */
