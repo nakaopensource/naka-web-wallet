@@ -2,6 +2,7 @@ import polygonVaultAbi from '@/assets/abi/PolygonVault.json';
 import polygonRegistryAbi from '@/assets/abi/PolygonVaultRegistry.json';
 import avaxVaultAbi from '@/assets/abi/AvaxVault.json';
 import avaxRegistryAbi from '@/assets/abi/AvaxVaultRegistry.json';
+import type {IChain} from '@/types/contracts.ts';
 
 export enum Network {
   ETHEREUM = 0,
@@ -163,7 +164,14 @@ export const AVAX_CONTRACT_ADDRESS_PRODUCTION =
   '0x28058649E3e3103763de83549B84ACb4B6d9dBC8';
 //issuer 3: 0x133B0823C58A4cd91470d1545cd65b7063Df4FDB
 
-export const CHAINS = [
+/**
+ * Each currency's balanceSource says where its available balance is read from:
+ * - 'protocolToken': the vault's protocol-token balance struct (chain.balanceCall)
+ * - 'paymentTokenId': vault.getPaymentTokenBalancesByTokenId(id), id resolved via registry.getWhitelistedTokenId(address)
+ * - 'erc20': raw ERC-20 balanceOf(vault), for tokens the vault keeps no available balance for
+ * The first currency is always offered in the currency picker, as are alwaysListed ones; the rest only when their balance is above zero.
+ */
+export const CHAINS: IChain[] = [
   {
     //Polygon
     id: 137,
@@ -193,17 +201,20 @@ export const CHAINS = [
       {
         name: 'USDT0',
         value: '0xc2132d05d31c914a87c6611c10748aeb04b58e8f',
-        id: 36495
+        id: 36495,
+        balanceSource: 'protocolToken'
       },
       {
         name: 'USDC',
         value: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359',
-        id: 13145
+        id: 13145,
+        balanceSource: 'erc20'
       },
       {
         name: 'XAUT0',
         value: '0xf1815bd50389c46847f0bda824ec8da914045d14',
-        id: 23828
+        id: 23828,
+        balanceSource: 'erc20'
       }
     ]
   },
@@ -245,17 +256,23 @@ export const CHAINS = [
       {
         name: 'USDT',
         value: '0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7',
-        id: 43207
+        id: 43207,
+        balanceSource: 'paymentTokenId',
+        alwaysListed: true
       },
       {
+        /** Not whitelisted in the Avalanche registry (getWhitelistedTokenId reverts), so the vault keeps no available balance for it */
         name: 'USDC',
         value: '0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E',
-        id: 35438
+        id: 35438,
+        balanceSource: 'erc20'
       },
       {
         name: 'XAUT0',
         value: '0x2775d5105276781B4b85bA6eA6a6653bEeD1dd32',
-        id: 56626
+        id: 56626,
+        balanceSource: 'paymentTokenId',
+        alwaysListed: true
       }
     ]
   }

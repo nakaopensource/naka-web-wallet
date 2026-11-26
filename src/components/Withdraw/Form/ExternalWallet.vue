@@ -41,9 +41,14 @@ const cancelForm = () => {
   contractsStore.updateFormField('', 'external', 'address');
 };
 
+/** MAX fills the selected token's available balance */
 const setMaxAmount = () => {
+  if (contractsStore.selectedBalance === null) {
+    return;
+  }
+
   contractsStore.updateFormField(
-    contractsStore.contractBalance.usdt,
+    contractsStore.selectedBalance,
     'external',
     'amount'
   );

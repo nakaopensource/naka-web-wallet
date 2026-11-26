@@ -20,9 +20,14 @@ const cancelForm = () => {
   contractsStore.updateFormField(null, 'connected', 'amount');
 };
 
+/** MAX fills the selected token's available balance */
 const setMaxAmount = () => {
+  if (contractsStore.selectedBalance === null) {
+    return;
+  }
+
   contractsStore.updateFormField(
-    contractsStore.contractBalance.usdt,
+    contractsStore.selectedBalance,
     'connected',
     'amount'
   );

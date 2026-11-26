@@ -8,6 +8,7 @@ import {
   formatWithAtLeastTwoDecimals,
   isMobileChrome,
   localizeDateTime,
+  shortenAddress,
   validateAddress
 } from '@/utils/helpers.ts';
 
@@ -22,6 +23,18 @@ const setUserAgent = (ua: string) => {
     configurable: true
   });
 };
+
+describe('shortenAddress', () => {
+  it('keeps the first 6 and last 4 characters, like the Connected panel', () => {
+    expect(shortenAddress('0x5B927F466fd94eE95C3cE49dcaf00885d1877da7')).toBe(
+      '0x5B92••••7da7'
+    );
+  });
+
+  it('returns an empty string for an empty address', () => {
+    expect(shortenAddress('')).toBe('');
+  });
+});
 
 describe('formatUint256toNumber', () => {
   it('converts a whole-token amount with default 6 decimals', () => {
@@ -45,6 +58,17 @@ describe('formatUint256toNumber', () => {
 
   it('handles amounts below one base unit of display precision', () => {
     expect(formatUint256toNumber(1n)).toBeCloseTo(0.000001, 9);
+  });
+
+  it('produces no floating-point noise', () => {
+    /** 12 + 894056 / 1e6 === 12.894055999999999 in JS */
+    expect(formatUint256toNumber(12_894_056n)).toBe(12.894056);
+    expect(String(formatUint256toNumber(12_894_056n))).toBe('12.894056');
+    expect(formatUint256toNumber(9_979_999n)).toBe(9.979999);
+  });
+
+  it('handles negative amounts', () => {
+    expect(formatUint256toNumber(-1_500_000n)).toBe(-1.5);
   });
 });
 
@@ -125,16 +149,26 @@ describe('formatWithAtLeastTwoDecimals', () => {
     expect(formatWithAtLeastTwoDecimals(5.5)).toBe('5.50');
   });
 
-  it('returns the value untouched when it already has two decimals', () => {
-    expect(formatWithAtLeastTwoDecimals(5.55)).toBe(5.55);
+  it('keeps two decimals as they are', () => {
+    expect(formatWithAtLeastTwoDecimals(5.55)).toBe('5.55');
   });
 
-  it('returns the value untouched when it has more than two decimals', () => {
-    expect(formatWithAtLeastTwoDecimals(1.234567)).toBe(1.234567);
+  it('keeps up to six decimals', () => {
+    expect(formatWithAtLeastTwoDecimals(1.234567)).toBe('1.234567');
   });
 
   it('handles zero', () => {
     expect(formatWithAtLeastTwoDecimals(0)).toBe('0.00');
+  });
+
+  it('drops floating-point noise (never more than 6 decimals)', () => {
+    /** 12 + 0.894056 in JS — what the balance card showed */
+    expect(formatWithAtLeastTwoDecimals(12.894055999999999)).toBe('12.894056');
+  });
+
+  it('trims trailing zeros beyond two decimals', () => {
+    expect(formatWithAtLeastTwoDecimals(2.5095)).toBe('2.5095');
+    expect(formatWithAtLeastTwoDecimals(3.1)).toBe('3.10');
   });
 });
 

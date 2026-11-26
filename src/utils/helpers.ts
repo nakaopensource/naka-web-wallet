@@ -17,6 +17,10 @@ export const bottomToast = (
   });
 };
 
+/** Short form of an address used across the app: 0x5B92••••7da7 */
+export const shortenAddress = (address: string) =>
+  address ? `${address.substring(0, 6)}••••${address.slice(-4)}` : '';
+
 /**
  * With the power of Clipboard API the method copies the text of the sibling Element.
  * */
@@ -59,33 +63,34 @@ export const openNewTab = (url: string) => {
   window.open(url, '_blank');
 };
 
+/**
+ * uint256 token amount to a number. Built as a decimal string and parsed once:
+ * adding the fractional part as a float (12 + 0.894056) yields noise like 12.894055999999999.
+ */
 export const formatUint256toNumber = (value: bigint, decimals = 6) => {
   const divisor = 10n ** BigInt(decimals);
-  const integerPart = value / divisor;
-  const fractionalPart = value % divisor;
+  const sign = value < 0n ? '-' : '';
+  const absolute = value < 0n ? -value : value;
+  const integerPart = absolute / divisor;
+  const fractionalPart = (absolute % divisor)
+    .toString()
+    .padStart(decimals, '0');
 
-  return Number(integerPart) + Number(fractionalPart) / Number(divisor);
+  return Number(`${sign}${integerPart}.${fractionalPart}`);
 };
 
 export const formatNumberToUint256 = (value: number, decimals = 6) => {
   return BigInt(Math.round(value * 10 ** decimals));
 };
 
-export const formatWithAtLeastTwoDecimals = (value: number) => {
-  const [integer, decimals] = value.toString().split('.');
+/**
+ * Display a token amount with at least 2 and at most `maxDecimals` decimals
+ * (6 = the tokens' precision). The cap also drops any floating-point noise.
+ */
+export const formatWithAtLeastTwoDecimals = (value: number, maxDecimals = 6) => {
+  const [integer, decimals = ''] = value.toFixed(maxDecimals).split('.');
 
-  if (!decimals) {
-    /** No decimal part, force two decimals */
-    return parseFloat(integer).toFixed(2);
-  }
-
-  if (decimals.length === 1) {
-    /** Only 1 decimal digit, add one more zero */
-    return `${integer}.${decimals}0`;
-  }
-
-  /** Already has 2 or more decimals, return as is */
-  return value;
+  return `${integer}.${decimals.replace(/0+$/, '').padEnd(2, '0')}`;
 };
 
 export const validateAddress = (address: string) => {

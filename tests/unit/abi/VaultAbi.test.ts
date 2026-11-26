@@ -127,6 +127,50 @@ describe.each(CHAINS.map((chain) => [chain.name, chain] as const))(
       });
     });
 
+    describe('per-token balance and reservation reads', () => {
+      const sources = chain.currencies.map((currency) => currency.balanceSource);
+
+      it('only the first currency reads the protocol-token struct', () => {
+        sources.forEach((source, index) => {
+          if (source === 'protocolToken') {
+            expect(index).toBe(0);
+          }
+        });
+      });
+
+      it.runIf(sources.includes('paymentTokenId'))(
+        'vault exposes per-token-id balances with availableBalance',
+        () => {
+          const fn = findFunction(vaultAbi, 'getPaymentTokenBalancesByTokenId');
+          expect(inputTypes(fn)).toEqual(['uint16']);
+          expect(structKeys(fn)).toContain('availableBalance');
+        }
+      );
+
+      it.runIf(sources.includes('paymentTokenId'))(
+        'vault exposes per-token-id withdrawal reservations (amount, unlockTime)',
+        () => {
+          const fn = findFunction(
+            vaultAbi,
+            'getWithdrawPaymentTokenReservationByTokenId'
+          );
+          expect(inputTypes(fn)).toEqual(['uint16']);
+          expect(structKeys(fn)).toEqual(
+            expect.arrayContaining(['amount', 'unlockTime'])
+          );
+        }
+      );
+
+      it.runIf(sources.includes('paymentTokenId'))(
+        'registry resolves token ids with getWhitelistedTokenId(address)',
+        () => {
+          const fn = findFunction(registryAbi, 'getWhitelistedTokenId');
+          expect(inputTypes(fn)).toEqual(['address']);
+          expect(fn?.outputs?.map((output) => output.type)).toEqual(['uint16']);
+        }
+      );
+    });
+
     describe('events read by the store', () => {
       it.each(REQUIRED_EVENTS)('%s exists in the vault ABI', (eventName) => {
         expect(findEvent(vaultAbi, eventName)).toBeDefined();

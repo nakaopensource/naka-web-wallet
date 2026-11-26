@@ -9,9 +9,13 @@ import type {
   IContractsStore,
   IContractsWallets,
   IExternalForm,
+  IOpenReservation,
   IRpc,
+  IToken,
+  IVaultTokenBalance,
   IWallet,
-  IWithdrawal
+  IWithdrawal,
+  TTokenBalances
 } from '@/types/contracts.ts';
 import {Contract, Web3, type ContractAbi} from 'web3';
 import {toast} from 'vue3-toastify';
@@ -24,15 +28,11 @@ import {
   TODAY_TIME
 } from '@/utils/constants.ts';
 import {metamaskSdk} from '@/utils/metamask.ts';
-import usdcABI from '@/assets/abi/USDC.json';
-import xautABI from '@/assets/abi/XAUT.json';
 import type {
   IBlock,
   ICancelledWithdrawReservationData,
   IReservation,
-  IVaultBalance,
   IVaultEvent,
-  IWhitelistedToken,
   IWithdrawRequestData
 } from '@/types/vault.ts';
 import {
@@ -44,18 +44,121 @@ import {
 } from '@/utils/helpers.ts';
 import {markRaw} from 'vue';
 
+/** Minimal ERC-20 ABI for reading a token balance */
+const ERC20_BALANCE_ABI = [
+  {
+    inputs: [{name: 'account', type: 'address'}],
+    name: 'balanceOf',
+    outputs: [{name: '', type: 'uint256'}],
+    stateMutability: 'view',
+    type: 'function'
+  }
+] as const;
+
+/** Incremented on every vault balance read and reset, so results of a superseded read (vault or chain switched meanwhile) are dropped */
+let balanceRequestSeq = 0;
+
+/** Registry token ids never change for a token, cache them per registry */
+const paymentTokenIdCache = new Map<string, number>();
+
+const tokenKey = (address: string) => address.toLowerCase();
+
+/** Block timestamp (seconds) loader that fetches each block once */
+const makeBlockTimeLoader = (
+  getBlock: (blockNumber: bigint | number) => Promise<{timestamp: unknown}>
+) => {
+  const cache = new Map<string, Promise<number>>();
+
+  return (blockNumber: bigint | number) => {
+    const key = String(blockNumber);
+
+    if (!cache.has(key)) {
+      cache.set(
+        key,
+        getBlock(blockNumber).then((block) => Number(block.timestamp))
+      );
+    }
+
+    return cache.get(key)!;
+  };
+};
+
+/** uint256 token amount (6 decimals) to token units; undefined stays undefined */
+const toTokenUnits = (value: unknown) =>
+  value === undefined ? undefined : formatUint256toNumber(BigInt(value as bigint));
+
+/**
+ * Narrow block range that contains every block whose timestamp equals `target`
+ * (seconds). Searches block timestamps by alternating interpolation and
+ * bisection; `blocksPerDay` only seeds the first guess. If the search can't
+ * narrow below `tolerance` blocks, the returned range is wider but still
+ * contains the target.
+ */
+export const findBlockRangeForTimestamp = async (
+  getTimestamp: (block: number) => Promise<number>,
+  latestBlock: number,
+  target: number,
+  blocksPerDay: number,
+  tolerance = 500
+): Promise<{from: number; to: number}> => {
+  let hi = latestBlock;
+  let hiTs = await getTimestamp(hi);
+
+  if (target >= hiTs) {
+    return {from: Math.max(0, hi - tolerance), to: hi};
+  }
+
+  /** Initial lower bound from the average block rate, with slack */
+  const blocksPerSecond = Math.max(blocksPerDay, 1) / 86400;
+  let lo = Math.max(
+    0,
+    hi - Math.ceil((hiTs - target) * blocksPerSecond * 1.5) - tolerance
+  );
+  let loTs = await getTimestamp(lo);
+
+  /** Move the lower bound further back until it is before the target */
+  for (let i = 0; loTs >= target && lo > 0 && i < 10; i++) {
+    hi = lo;
+    hiTs = loTs;
+    lo = Math.max(0, lo - (latestBlock - lo) - tolerance);
+    loTs = await getTimestamp(lo);
+  }
+
+  if (loTs >= target) {
+    return {from: 0, to: Math.min(latestBlock, hi + tolerance)};
+  }
+
+  /** Invariant: timestamp(lo) < target <= timestamp(hi) */
+  for (let i = 0; i < 40 && hi - lo > tolerance; i++) {
+    let mid =
+      i % 2 === 0
+        ? lo + Math.round(((target - loTs) / (hiTs - loTs)) * (hi - lo))
+        : lo + Math.floor((hi - lo) / 2);
+    mid = Math.min(hi - 1, Math.max(lo + 1, mid));
+    const midTs = await getTimestamp(mid);
+
+    if (midTs < target) {
+      lo = mid;
+      loTs = midTs;
+    } else {
+      hi = mid;
+      hiTs = midTs;
+    }
+  }
+
+  /** Blocks sharing the target timestamp can follow hi */
+  return {from: lo, to: Math.min(latestBlock, hi + tolerance)};
+};
+
 export const useContractsStore = defineStore('contracts', {
   state: (): IContractsStore => ({
     web3: null,
     firstSign: false,
     connectedAccount: '',
     balance: '',
-    vaultBalance: null,
+    balances: {},
+    vaultBalance: {},
     amountDecimalPoints: 6,
-    contractBalance: {
-      eth: 0,
-      usdt: 0
-    },
     provider: null,
     allAccounts: [],
     inputs: {
@@ -75,7 +178,8 @@ export const useContractsStore = defineStore('contracts', {
       history: false,
       withdraw: false,
       cancelWithdraw: false,
-      completeWithdraw: false
+      completeWithdraw: false,
+      vaultBalance: false
     },
     transactionHash: {
       contractAddress: ''
@@ -129,6 +233,7 @@ export const useContractsStore = defineStore('contracts', {
       externalAddress: false
     },
     factoryContracts: [],
+    activeFactory: null,
     vaultContract: null,
     transactionGas: {
       gas: 0,
@@ -148,14 +253,6 @@ export const useContractsStore = defineStore('contracts', {
     rpc: {
       name: '',
       url: ''
-    },
-    usdc: {
-      contract: null,
-      balance: 0
-    },
-    xaut: {
-      contract: null,
-      balance: 0
     },
     currencyToken: '',
     tokens: [],
@@ -225,6 +322,22 @@ export const useContractsStore = defineStore('contracts', {
           (item) => item.value === state.currencyToken
         )?.name || state.activeChain.currencies[0].name
       );
+    },
+    /** Available balance of the selected currency token; null when not loaded or the read failed */
+    selectedBalance: (state): number | null => {
+      if (!state.currencyToken) {
+        return null;
+      }
+
+      return state.balances[tokenKey(state.currencyToken)] ?? null;
+    },
+    /** True when the selected token's balance read failed (as opposed to not loaded yet) */
+    selectedBalanceFailed: (state): boolean => {
+      if (!state.currencyToken) {
+        return false;
+      }
+
+      return state.balances[tokenKey(state.currencyToken)] === null;
     }
   },
   actions: {
@@ -322,6 +435,7 @@ export const useContractsStore = defineStore('contracts', {
       this.cancelledWithdrawals = [];
       this.completedWithdrawals = [];
       this.withdrawals = [];
+      this.withdrawalRequests = [];
     },
 
     resetConnectedForm() {
@@ -520,27 +634,27 @@ export const useContractsStore = defineStore('contracts', {
       }
     },
 
+    /** Clear the vault's token balances and drop any read still in flight */
+    resetVaultBalances() {
+      balanceRequestSeq++;
+      this.balances = {};
+      this.vaultBalance = {};
+      this.updateLoading({vaultBalance: false});
+    },
+
     resetBalance() {
       this.balance = '';
-      this.contractBalance = {
-        eth: 0,
-        usdt: 0
-      };
-      this.vaultBalance = null;
+      this.resetVaultBalances();
     },
 
     disconnectMetamask() {
       this.contractIndex = 0;
       this.connectedAccount = '';
       this.vaultAddress = '';
-      this.balance = '';
-      this.contractBalance = {
-        eth: 0,
-        usdt: 0
-      };
+      this.resetBalance();
       this.vaultContract = null;
       this.factoryContracts = [];
-      this.vaultBalance = null;
+      this.activeFactory = null;
       this.daysOffset = TODAY_TIME;
       sessionStorage.removeItem('firstSign');
       this.resetWithdrawalsList();
@@ -649,101 +763,176 @@ export const useContractsStore = defineStore('contracts', {
       }
     },
 
-    async getVaultBalance() {
-      if (!this.vaultContract) {
-        return;
+    /** Resolve a token's id in the current vault's registry (Avalanche multi-token vaults) */
+    async resolvePaymentTokenId(token: string): Promise<number> {
+      if (!this.activeFactory) {
+        throw new Error('No registry for the current vault');
       }
 
-      if (!this.activeChain) {
-        return;
+      const registry = String(this.activeFactory.options?.address ?? '');
+      const cacheKey = `${registry.toLowerCase()}:${tokenKey(token)}`;
+      const cached = paymentTokenIdCache.get(cacheKey);
+      if (cached !== undefined) {
+        return cached;
       }
 
-      try {
-        /** Set the balance (in USDT) by calling the "getProtocolTokenBalances" from the Vault SC */
-        const balanceMethod = this.activeChain.balanceCall;
-        this.vaultBalance =
-          await this.vaultContract.methods[balanceMethod]().call();
+      const tokenId = Number(
+        await this.activeFactory.methods['getWhitelistedTokenId'](token).call()
+      );
+      paymentTokenIdCache.set(cacheKey, tokenId);
+      return tokenId;
+    },
 
-        this.tokens = [this.activeChain.currencies[0]];
+    /** Read one token's balances from the source configured for it. Throws when the read fails. */
+    async readVaultTokenBalance(
+      currency: IToken,
+      vault: Pick<Contract<ContractAbi>, 'methods'>,
+      vaultAddress: string
+    ): Promise<IVaultTokenBalance> {
+      if (!this.activeChain || !this.web3) {
+        throw new Error('No active chain');
+      }
 
-        /** Set USDC balance */
-        const usdcBalance = (await this.usdc.contract?.methods
-          .balanceOf(this.vaultAddress)
-          .call()) as bigint;
-        this.usdc.balance = formatUint256toNumber(usdcBalance);
-        if (this.usdc.balance) {
-          this.tokens = [
-            ...this.tokens,
-            {
-              name: 'USDC',
-              value:
-                this.activeChain.currencies.find((item) => item.name === 'USDC')
-                  ?.value || '',
-              id:
-                this.activeChain.currencies.find(
-                  (currency) => currency.name === 'USDC'
-                )?.id ?? 0
-            }
-          ];
+      switch (currency.balanceSource) {
+        case 'protocolToken': {
+          /** The Polygon contract was deployed with the "avaliableBalance" typo; VaultAbi.test.ts pins both spellings */
+          const balanceKey =
+            this.activeChain.id === 137
+              ? 'avaliableBalance'
+              : 'availableBalance';
+          const raw: Record<string, unknown> = await vault.methods[
+            this.activeChain.balanceCall
+          ]().call();
+
+          if (raw[balanceKey] === undefined) {
+            throw new Error(
+              `${this.activeChain.balanceCall}() returned no ${balanceKey}`
+            );
+          }
+
+          return {
+            source: 'protocolToken',
+            availableBalance: toTokenUnits(raw[balanceKey])!,
+            balance: toTokenUnits(raw.balance),
+            withdrawalReservation: toTokenUnits(raw.withdrawalReservation),
+            processPaymentReservation: toTokenUnits(
+              raw.processPaymentReservation
+            )
+          };
         }
 
-        /** Set XAUT balance */
-        const xautBalance = (await this.xaut.contract?.methods
-          .balanceOf(this.vaultAddress)
-          .call()) as bigint;
-        this.xaut.balance = formatUint256toNumber(xautBalance);
-        if (this.xaut.balance) {
-          this.tokens = [
-            ...this.tokens,
-            {
-              name: 'XAUT0',
-              value:
-                this.activeChain.currencies.find(
-                  (item) => item.name === 'XAUT0'
-                )?.value || '',
-              id:
-                this.activeChain.currencies.find(
-                  (currency) => currency.name === 'XAUT0'
-                )?.id ?? 0
-            }
-          ];
+        case 'paymentTokenId': {
+          const tokenId = await this.resolvePaymentTokenId(currency.value);
+          const raw: Record<string, unknown> = await vault.methods[
+            'getPaymentTokenBalancesByTokenId'
+          ](tokenId).call();
+
+          if (raw.availableBalance === undefined) {
+            throw new Error(
+              'getPaymentTokenBalancesByTokenId() returned no availableBalance'
+            );
+          }
+
+          return {
+            source: 'paymentTokenId',
+            availableBalance: toTokenUnits(raw.availableBalance)!,
+            balance: toTokenUnits(raw.balance),
+            withdrawalReservation: toTokenUnits(raw.withdrawalReservation),
+            processPaymentReservation: toTokenUnits(
+              raw.processPaymentReservation
+            ),
+            frozenPaymentTokenAmount: toTokenUnits(raw.frozenPaymentTokenAmount)
+          };
         }
 
-        /** Check if the currency token currently active still has balance in the vault. If not reset the selection to the first item in the currency array */
-        const currencyTokenActive = this.tokens.some(
-          (item) => item.value === this.currencyToken
-        );
-        if (!currencyTokenActive) {
-          this.currencyToken = this.tokens[0].value;
+        case 'erc20': {
+          /** No vault-side accounting for this token: the raw token balance is all there is */
+          const token = new this.web3.eth.Contract(
+            ERC20_BALANCE_ABI,
+            currency.value
+          );
+          const amount = toTokenUnits(
+            await token.methods.balanceOf(vaultAddress).call()
+          )!;
+          return {source: 'erc20', availableBalance: amount, balance: amount};
         }
-
-        if (!this.vaultBalance) {
-          return;
-        }
-
-        const balanceKey: 'avaliableBalance' | 'availableBalance' =
-          this.activeChain.id === 137 ? 'avaliableBalance' : 'availableBalance';
-        const converted = formatUint256toNumber(
-          (
-            this.vaultBalance as unknown as Record<
-              typeof balanceKey,
-              bigint | undefined
-            >
-          )[balanceKey] ?? 0n
-        );
-
-        this.contractBalance = {
-          ...this.contractBalance,
-          usdt: converted
-        };
-      } catch (error) {
-        console.error(
-          'Error fetching vault balance: ',
-          (error as Error).message
-        );
       }
     },
 
+    async getVaultBalance() {
+      const chain = this.activeChain;
+      const vault = this.vaultContract;
+      const vaultAddress = this.vaultAddress;
+
+      if (!chain || !vault || !this.web3) {
+        return;
+      }
+
+      /** Clear the previous numbers first, so a failed read can never leave another vault's (or an outdated) balance on screen */
+      const requestId = ++balanceRequestSeq;
+      this.balances = {};
+      this.vaultBalance = {};
+      this.updateLoading({vaultBalance: true});
+
+      /** Read every token independently, so one failing read doesn't block the others */
+      const results = await Promise.allSettled(
+        chain.currencies.map((currency) =>
+          this.readVaultTokenBalance(currency, vault, vaultAddress)
+        )
+      );
+
+      /** A newer read or a reset started meanwhile (vault or chain switch) — drop these results */
+      if (requestId !== balanceRequestSeq) {
+        return;
+      }
+
+      const balances: TTokenBalances = {};
+      const vaultBalance: Record<string, IVaultTokenBalance | null> = {};
+      results.forEach((result, index) => {
+        const currency = chain.currencies[index];
+
+        if (result.status === 'fulfilled') {
+          balances[tokenKey(currency.value)] = result.value.availableBalance;
+          vaultBalance[currency.name] = result.value;
+          return;
+        }
+
+        balances[tokenKey(currency.value)] = null;
+        vaultBalance[currency.name] = null;
+        console.error(
+          `Error fetching ${currency.name} vault balance: `,
+          (result.reason as Error)?.message
+        );
+      });
+
+      this.balances = balances;
+      this.vaultBalance = vaultBalance;
+
+      /** Offer the first currency and alwaysListed ones, plus any other token the vault holds */
+      this.tokens = chain.currencies.filter(
+        (currency, index) =>
+          index === 0 ||
+          currency.alwaysListed ||
+          (balances[tokenKey(currency.value)] ?? 0) > 0
+      );
+
+      /** If the selected token is no longer offered, fall back to the first one */
+      const currencyTokenActive = this.tokens.some(
+        (item) => item.value === this.currencyToken
+      );
+      if (!currencyTokenActive) {
+        this.currencyToken = this.tokens[0].value;
+      }
+
+      this.updateLoading({vaultBalance: false});
+    },
+
+    /**
+     * Recipient (2nd argument) of the withdrawal request in a transaction's input, matched by token + amount.
+     * Requests come either as withdrawRequest(token, recipient, amount) — the web app — or as
+     * withdrawRequestWithSignature(token, recipient, amount, signature) — signed flows; both start with the
+     * same three words. The call can be wrapped (e.g. a smart-account batch), so the input is scanned.
+     */
     extractWithdrawRequestRecipient(
       input: string,
       token: string,
@@ -751,36 +940,50 @@ export const useContractsStore = defineStore('contracts', {
     ): string | null {
       if (!this.web3) return null;
 
-      const selector = this.web3.eth.abi
-        .encodeFunctionSignature('withdrawRequest(address,address,uint256)')
-        .slice(2)
-        .toLowerCase();
+      const abi = this.web3.eth.abi;
+      const selectors = [
+        'withdrawRequest(address,address,uint256)',
+        'withdrawRequestWithSignature(address,address,uint256,bytes)'
+      ].map((signature) =>
+        abi.encodeFunctionSignature(signature).slice(2).toLowerCase()
+      );
       const data = input.toLowerCase().replace(/^0x/, '');
 
-      for (
-        let i = data.indexOf(selector);
-        i !== -1;
-        i = data.indexOf(selector, i + 1)
-      ) {
-        if (i % 2 !== 0) continue; // must start on a byte boundary
-        const args = data.slice(i + 8, i + 8 + 192); // 3 × 32 bytes
-        if (args.length !== 192) continue;
-        try {
-          const d = this.web3.eth.abi.decodeParameters(
-            ['address', 'address', 'uint256'],
-            '0x' + args
-          );
-          if (
-            String(d[0]).toLowerCase() === token.toLowerCase() &&
-            BigInt(d[2] as bigint) === BigInt(amount)
-          ) {
-            return String(d[1]);
+      for (const selector of selectors) {
+        for (
+          let i = data.indexOf(selector);
+          i !== -1;
+          i = data.indexOf(selector, i + 1)
+        ) {
+          if (i % 2 !== 0) continue; // must start on a byte boundary
+          const args = data.slice(i + 8, i + 8 + 192); // token, recipient, amount: 3 × 32 bytes
+          if (args.length !== 192) continue;
+          try {
+            const d = abi.decodeParameters(
+              ['address', 'address', 'uint256'],
+              '0x' + args
+            );
+            if (
+              String(d[0]).toLowerCase() === token.toLowerCase() &&
+              BigInt(d[2] as bigint) === BigInt(amount)
+            ) {
+              return String(d[1]);
+            }
+          } catch {
+            /* not a real match, keep scanning */
           }
-        } catch {
-          /* not a real match, keep scanning */
         }
       }
       return null;
+    },
+
+    /** Read a transaction through the wallet provider, falling back to the configured RPC */
+    async getTransactionWithFallback(hash: string) {
+      try {
+        return await this.web3!.eth.getTransaction(hash);
+      } catch {
+        return await new Web3(this.rpc.url).eth.getTransaction(hash);
+      }
     },
 
     async getEstimatedGas(
@@ -869,7 +1072,9 @@ export const useContractsStore = defineStore('contracts', {
         return;
       }
 
-      if (this.contractBalance.usdt < this.form.connected.amount.value) {
+      /** Check against the selected token's balance; an unknown balance blocks the request */
+      const available = this.selectedBalance;
+      if (available === null || available < this.form.connected.amount.value) {
         return;
       }
 
@@ -898,6 +1103,14 @@ export const useContractsStore = defineStore('contracts', {
       try {
         /** On amount screen call the "withdrawRequest" method from the Vault SC. On success the withdraw request is pending for an hour before the user can complete it */
         if (this.wallets.connected.step === 1) {
+          /** Never send a new request while one is open: the contract would silently replace it */
+          if (
+            method === 'withdrawRequest' &&
+            !(await this.ensureNoOpenReservation())
+          ) {
+            return;
+          }
+
           /** Fetch estimated gas */
           await this.getEstimatedGas(this.vaultContract, method, [
             this.currencyToken,
@@ -975,10 +1188,9 @@ export const useContractsStore = defineStore('contracts', {
         return;
       }
 
-      if (
-        this.currencyToken === this.activeChain.currencies[0].value &&
-        this.contractBalance.usdt < this.form.external.amount.value
-      ) {
+      /** Check against the selected token's balance; an unknown balance blocks the request */
+      const available = this.selectedBalance;
+      if (available === null || available < this.form.external.amount.value) {
         return;
       }
 
@@ -1013,6 +1225,14 @@ export const useContractsStore = defineStore('contracts', {
         }
 
         if (this.wallets.external.step === 2) {
+          /** Never send a new request while one is open: the contract would silently replace it */
+          if (
+            method === 'withdrawRequest' &&
+            !(await this.ensureNoOpenReservation())
+          ) {
+            return;
+          }
+
           /** Fetch estimated gas */
           await this.getEstimatedGas(this.vaultContract, method, [
             this.currencyToken,
@@ -1118,6 +1338,9 @@ export const useContractsStore = defineStore('contracts', {
         this.vaultAddress
       );
 
+      /** Don't keep a previous vault's or time window's events if this fetch fails */
+      this.withdrawalRequests = [];
+
       try {
         /** Get all events from the requests made with withdrawRequest methods. The event contains an unclock time and an amount requested to withdraw but no recipient address */
         const fromBlock =
@@ -1140,12 +1363,132 @@ export const useContractsStore = defineStore('contracts', {
       }
     },
 
+    /**
+     * Open withdrawal reservation of the current vault, read from contract state (not from events, so it doesn't depend on the history time filter).
+     * Polygon vaults only expose the protocol token's reservation; Avalanche vaults one per whitelisted token. Throws when a read fails.
+     */
+    async findOpenReservation(): Promise<IOpenReservation | null> {
+      const chain = this.activeChain;
+      const vault = this.vaultContract;
+
+      if (!chain || !vault) {
+        return null;
+      }
+
+      const open: IOpenReservation[] = [];
+
+      for (const currency of chain.currencies) {
+        let reservation: IReservation | null = null;
+
+        if (currency.balanceSource === 'protocolToken') {
+          reservation = await vault.methods[chain.reservationCall]().call();
+        } else if (currency.balanceSource === 'paymentTokenId') {
+          const tokenId = await this.resolvePaymentTokenId(currency.value);
+          reservation = await vault.methods[
+            'getWithdrawPaymentTokenReservationByTokenId'
+          ](tokenId).call();
+        }
+
+        if (reservation && BigInt(reservation.amount) > 0n) {
+          open.push({
+            token: currency.value,
+            amount: BigInt(reservation.amount),
+            unlockTime: BigInt(reservation.unlockTime)
+          });
+        }
+      }
+
+      if (open.length > 1) {
+        console.warn('Multiple open withdrawal reservations', open);
+      }
+
+      /** The UI handles one request at a time: show the most recent one first */
+      return (
+        open.sort((a, b) => (a.unlockTime > b.unlockTime ? -1 : 1))[0] ?? null
+      );
+    },
+
+    /**
+     * The WithdrawRequest event that created a reservation. The request was made at unlockTime - lockDuration, so only a narrow block range around
+     * that time is searched. Returns null if it isn't found (e.g. the lock duration changed since the request).
+     */
+    async findWithdrawRequestEvent(
+      reservation: IOpenReservation,
+      requestTime: number
+    ): Promise<IVaultEvent<IWithdrawRequestData> | null> {
+      if (!this.activeChain) {
+        return null;
+      }
+
+      /** Connect to another RPC - the default RPC for the Polygon mainnet isn't indexing properly in certain timezones */
+      const web3Instance = new Web3(this.rpc.url);
+      const vaultContract = new web3Instance.eth.Contract(
+        this.activeChain.vaultAbi,
+        this.vaultAddress
+      );
+
+      /** Narrow to ~30 blocks: some RPCs reject log queries over 100 blocks */
+      const latestBlock = Number(await web3Instance.eth.getBlockNumber());
+      const {from, to} = await findBlockRangeForTimestamp(
+        async (block) =>
+          Number((await web3Instance.eth.getBlock(block)).timestamp),
+        latestBlock,
+        requestTime,
+        this.blocksOffset,
+        16
+      );
+
+      const events = (await (vaultContract as any).getPastEvents(
+        'WithdrawRequest',
+        {fromBlock: from, toBlock: to}
+      )) as IVaultEvent<IWithdrawRequestData>[];
+
+      return (
+        events
+          .filter(
+            (event) =>
+              tokenKey(event.returnValues.token) ===
+                tokenKey(reservation.token) &&
+              BigInt(event.returnValues.amount) === reservation.amount &&
+              BigInt(event.returnValues.unlockTime) === reservation.unlockTime
+          )
+          .at(-1) ?? null
+      );
+    },
+
+    /** Re-read the vault right before sending a new withdrawRequest. Returns false (and tells the user) when one is already open or the check fails. */
+    async ensureNoOpenReservation(): Promise<boolean> {
+      try {
+        if (!(await this.findOpenReservation())) {
+          return true;
+        }
+      } catch (error) {
+        console.error(
+          'Error checking open withdrawal requests: ',
+          (error as Error).message
+        );
+        toast.error(
+          'Could not check for pending withdrawal requests. Please try again.'
+        );
+        return false;
+      }
+
+      toast.error(
+        'You already have a pending withdrawal request. Complete or cancel it before creating a new one.'
+      );
+
+      /** Refresh the list so the pending request shows up and blocks new requests */
+      this.resetWithdrawalsList();
+      await this.getWithdrawalHistory();
+      return false;
+    },
+
     async getActiveRequest() {
       if (
-        !this.factoryContracts.length ||
         !this.vaultContract ||
         !this.web3 ||
-        !this.activeChain
+        !this.activeChain ||
+        !this.activeFactory
       ) {
         return;
       }
@@ -1153,132 +1496,74 @@ export const useContractsStore = defineStore('contracts', {
       try {
         this.activeRequest = null;
 
-        /** Fetch withdraw requests from the WithdrawRequest event */
-        await this.getWithdrawRequests();
+        /** The pending request comes from the vault's reservation state, independent of the history time filter */
+        const reservation = await this.findOpenReservation();
 
-        /** Take the latest WithdrawalRequest event as the active request */
-        const latestRequest = this.withdrawalRequests?.at(-1);
+        if (!reservation) {
+          return;
+        }
 
-        /** Initialize latest reserved amount */
-        let latestReservedAmount = 0;
+        /** Fetch a lock duration of the withdrawal request from the vault's own registry */
+        const lockDuration = BigInt(
+          await this.activeFactory.methods[
+            this.activeChain.reservationLockCall
+          ]().call()
+        );
+        const requestTime = Number(reservation.unlockTime - lockDuration);
 
-        if (latestRequest) {
-          const factory = this.factoryContracts[this.contractIndex];
+        /** The recipient (second withdrawRequest argument) is only in the request transaction, found via its WithdrawRequest event */
+        let recipient: string | null = null;
+        let requestEvent: IVaultEvent<IWithdrawRequestData> | null = null;
 
-          if (factory.methods['getAllAvailableWhitelistedTokens']) {
-            /** Multi-token vaults (Avalanche): look up the reservation by token id */
-            const whitelistedTokens: string[] =
-              await factory.methods[
-                'getAllAvailableWhitelistedTokens'
-              ]().call();
+        try {
+          requestEvent = await this.findWithdrawRequestEvent(
+            reservation,
+            requestTime
+          );
 
-            const tokenIndex = whitelistedTokens.findIndex(
-              (token) =>
-                token.toLowerCase() ===
-                latestRequest.returnValues.token.toLowerCase()
+          if (requestEvent) {
+            const blockRequest = (await this.web3.eth.getBlock(
+              requestEvent.blockNumber,
+              true
+            )) as IBlock;
+
+            const requestTransaction = blockRequest.transactions.find(
+              (item) => item.hash === requestEvent?.transactionHash
             );
 
-            if (tokenIndex === -1) {
-              return;
+            if (requestTransaction) {
+              recipient = this.extractWithdrawRequestRecipient(
+                requestTransaction.input,
+                reservation.token,
+                reservation.amount
+              );
             }
-
-            const latestWhitelistedToken: IWhitelistedToken =
-              await factory.methods['getAvailableWhitelistedTokenByIndex'](
-                tokenIndex
-              ).call();
-
-            const tokenData: IVaultBalance = await this.vaultContract.methods[
-              'getPaymentTokenBalancesByTokenId'
-            ](Number(latestWhitelistedToken.tokenId)).call();
-
-            latestReservedAmount = Number(tokenData.withdrawalReservation);
-          } else {
-            /** Single-token vaults (Polygon): read the reservation directly */
-            const reservation: IReservation =
-              await this.vaultContract.methods[
-                this.activeChain.reservationCall
-              ]().call();
-
-            latestReservedAmount = Number(reservation.amount);
           }
+        } catch (error) {
+          console.error(
+            'Error fetching withdraw request event: ',
+            (error as Error).message
+          );
         }
-
-        /** Stop propagation if no amount is reserved */
-        if (!latestReservedAmount || !latestRequest) {
-          return;
-        }
-
-        /** Fetch the reserved withdrawal request amount and unlock time from the smart contract */
-        const reservationAmount = Number(latestRequest.returnValues.amount);
-
-        /** Fetch a lock duration of the withdrawal request from the factory contract */
-        const lockDuration: bigint =
-          await this.factoryContracts[this.contractIndex].methods[
-            this.activeChain.reservationLockCall
-          ]().call();
-
-        /** When there are no reserved funds reset the active request and stop propagation */
-        if (reservationAmount <= 0) {
-          this.activeRequest = null;
-          return;
-        }
-
-        /** Check if more than time has passed than the amount of lock duration, which means the request is ready to be completed by the user */
-        const thresholdPassed =
-          Date.now() > Number(latestRequest.returnValues.unlockTime) * 1000;
-
-        /** If for whatever reason the public indexer doesn't work, open a prompt notifying the user he has an outstanding withdrawal request */
-        if (thresholdPassed && !latestRequest) {
-          this.thresholdPrompt =
-            'We have detected you have an outstanding withdrawal request. Please note that a small gas fee is required to cancel your withdrawal.';
-          this.updateModal({overtime: true});
-          return;
-        }
-
-        /** In order to access the recipient address used as a second argument in withdrawRequest method, we need to first access the transaction from the web3. The transactionHash used to index a transaction can be found in the emitted event WithdrawRequest */
-        const blockRequest = (await this.web3.eth.getBlock(
-          latestRequest.blockNumber,
-          true
-        )) as IBlock;
-
-        /** Extract the active request by comparing block transaction's hash to the latest withdrawal request event's hash */
-        const activeRequestTransaction = blockRequest.transactions.find(
-          (item) => item.hash === latestRequest.transactionHash
-        );
-
-        /** Stop propagation if no transaction is found */
-        if (!activeRequestTransaction) {
-          return;
-        }
-
-        const recipient = this.extractWithdrawRequestRecipient(
-          activeRequestTransaction.input,
-          latestRequest.returnValues.token,
-          latestRequest.returnValues.amount
-        );
 
         /** Keep the request (so it can be cancelled) but block completing without a verified recipient */
         if (!recipient) {
           console.error(
             'Could not find recipient for withdraw request',
-            latestRequest.transactionHash
+            requestEvent?.transactionHash ?? '(request event not found)'
           );
         }
 
-        /** By default, the unlockTime fetched from the SC is of type bigint. Once converted to the number it shows the time in seconds. First we need to multiply it with 1000 to convert it to milliseconds, then we can use Date to mutate it */
+        /** unlockTime is in seconds; multiply by 1000 for Date */
         this.activeRequest = {
           address: recipient ?? '',
-          amount: formatUint256toNumber(latestRequest.returnValues.amount),
-          date: new Date(
-            (Number(latestRequest.returnValues.unlockTime) -
-              Number(lockDuration)) *
-              1000
-          ),
+          amount: formatUint256toNumber(reservation.amount),
+          date: new Date(requestTime * 1000),
           status:
-            Number(latestRequest.returnValues.unlockTime) * 1000 < Date.now()
+            Number(reservation.unlockTime) * 1000 < Date.now()
               ? 'ready'
               : 'pending',
-          token: latestRequest.returnValues.token
+          token: reservation.token
         };
 
         /** If more than ten days have passed since making withdrawal request, prompt the user to either cancel or complete withdrawal request */
@@ -1297,92 +1582,56 @@ export const useContractsStore = defineStore('contracts', {
       }
     },
 
-    async findRecipientForCancellation(cancelTxHash: string) {
-      if (!this.web3 || !this.vaultContract) {
+    /**
+     * Recipient of a cancelled request. The CanceledWithdrawReservation event already carries token + amount;
+     * the request it cancelled is the latest WithdrawRequest event (loaded for this time window) with the same
+     * token + amount at or before it. Returns undefined when no request matches; throws when a lookup fails.
+     */
+    async findRecipientForCancellation(
+      cancellation: IVaultEvent<ICancelledWithdrawReservationData>
+    ) {
+      if (!this.web3) {
         return;
       }
 
-      try {
-        /** Get the cancel transaction receipt */
-        const transactionReceipt =
-          await this.web3.eth.getTransactionReceipt(cancelTxHash);
+      const token = String(cancellation.returnValues.token);
+      const amount = BigInt(cancellation.returnValues.amount);
 
-        /** Stop propagation if there is no transaction with provided hash */
-        if (!transactionReceipt) {
-          return;
-        }
+      const cancelledRequest = this.withdrawalRequests
+        .filter(
+          (item) =>
+            BigInt(item.blockNumber) <= BigInt(cancellation.blockNumber) &&
+            amount === BigInt(item.returnValues.amount) &&
+            token.toLowerCase() === item.returnValues.token.toLowerCase()
+        )
+        .at(-1);
 
-        /** Get token address from the CanceledWithdrawReservation event */
-        const event = transactionReceipt.logs.find(
-          (log) =>
-            log.address?.toLowerCase() === this.vaultAddress.toLowerCase()
-        );
-
-        /** Stop propagation if no cancelled requests are found */
-        if (!event || !event.data || !event.topics) {
-          return;
-        }
-
-        /** Decode the log by providing data from the cancelled receipt */
-        const decodedEvent = this.web3.eth.abi.decodeLog(
-          [
-            {indexed: true, name: 'token', type: 'address'},
-            {indexed: false, name: 'amount', type: 'uint256'}
-          ],
-          event.data,
-          event.topics
-        );
-
-        /** Set currency token and amount requested */
-        const token = String(decodedEvent.token);
-        const amount = BigInt(decodedEvent.amount as bigint);
-
-        /** Search backwards for the withdrawRequest with the same token + amount (requires scanning past logs for WithdrawRequest events) */
-        if (!this.withdrawalRequests.length) {
-          await this.getWithdrawRequests();
-        }
-
-        const cancelledRequest = this.withdrawalRequests
-          .filter(
-            (item) =>
-              BigInt(item.blockNumber) <=
-                BigInt(transactionReceipt.blockNumber) &&
-              amount === BigInt(item.returnValues.amount) &&
-              token.toLowerCase() === item.returnValues.token.toLowerCase()
-          )
-          .at(-1);
-
-        /** Throw an error if no compatible request is found */
-        if (!cancelledRequest) {
-          return;
-        }
-
-        /** Find the transaction of the log */
-        const cancelledTransaction = await this.web3.eth.getTransaction(
-          cancelledRequest.transactionHash
-        );
-
-        const recipient = this.extractWithdrawRequestRecipient(
-          cancelledTransaction.input,
-          token,
-          amount
-        );
-
-        if (!recipient) {
-          return;
-        }
-
-        return {
-          recipient,
-          withdrawTxHash: cancelledRequest.transactionHash
-        };
-      } catch (error) {
-        throw new Error('Matching withdrawRequest not found');
+      if (!cancelledRequest) {
+        return;
       }
+
+      const transaction = await this.getTransactionWithFallback(
+        cancelledRequest.transactionHash
+      );
+
+      const recipient = this.extractWithdrawRequestRecipient(
+        transaction.input,
+        token,
+        amount
+      );
+
+      if (!recipient) {
+        return;
+      }
+
+      return {
+        recipient,
+        withdrawTxHash: cancelledRequest.transactionHash
+      };
     },
 
     async getCancelledWithdrawals() {
-      if (!this.activeChain) {
+      if (!this.activeChain || !this.web3) {
         return;
       }
 
@@ -1404,36 +1653,52 @@ export const useContractsStore = defineStore('contracts', {
           toBlock: 'latest'
         })) as IVaultEvent<ICancelledWithdrawReservationData>[];
 
-        /** Map the cancellations by adding a timestamp to the object from cancellation block */
-        const constructedCancellations = cancelledWithdrawals.map(
-          async (cancellation) => {
-            if (!this.web3) {
-              return;
-            }
-
-            const block = await this.web3.eth.getBlock(
-              cancellation.blockNumber,
-              true
-            );
-            const timestamp = block.timestamp;
-            const cancelledTx = await this.findRecipientForCancellation(
-              cancellation.transactionHash
-            );
-
-            return {
-              address: cancelledTx ? cancelledTx.recipient : '',
-              amount: formatUint256toNumber(cancellation.returnValues.amount),
-              date: new Date(Number(timestamp) * 1000),
-              status: 'cancelled',
-              token: cancellation.returnValues.token
-            };
-          }
+        /** Header only (no transactions), each block fetched once */
+        const web3 = this.web3;
+        const blockTime = makeBlockTimeLoader((blockNumber) =>
+          web3.eth.getBlock(blockNumber)
         );
 
-        /** Resolve mapping promises */
-        this.cancelledWithdrawals = (
-          await Promise.all(constructedCancellations)
-        ).filter((item) => item?.address) as IWithdrawal[];
+        /** Each row stands on its own: a failed recipient lookup shows "Unknown recipient" instead of dropping the whole list */
+        const rows = await Promise.allSettled(
+          cancelledWithdrawals.map(async (cancellation) => {
+            const [timestamp, cancelledTx] = await Promise.all([
+              blockTime(cancellation.blockNumber),
+              this.findRecipientForCancellation(cancellation).catch(
+                (error) => {
+                  console.error(
+                    'Could not find the recipient of a cancelled request: ',
+                    cancellation.transactionHash,
+                    (error as Error)?.message
+                  );
+                  return undefined;
+                }
+              )
+            ]);
+
+            return {
+              address: cancelledTx?.recipient ?? '',
+              amount: formatUint256toNumber(cancellation.returnValues.amount),
+              date: new Date(timestamp * 1000),
+              status: 'cancelled',
+              token: cancellation.returnValues.token
+            } as IWithdrawal;
+          })
+        );
+
+        this.cancelledWithdrawals = rows.flatMap((row, index) => {
+          if (row.status === 'fulfilled') {
+            return [row.value];
+          }
+
+          /** Without its block time a row can't be dated or sorted */
+          console.error(
+            'Error loading a cancelled withdrawal: ',
+            cancelledWithdrawals[index].transactionHash,
+            (row.reason as Error)?.message
+          );
+          return [];
+        });
       } catch (error) {
         console.error(
           'Error fetching cancelled withdrawals: ',
@@ -1443,7 +1708,7 @@ export const useContractsStore = defineStore('contracts', {
     },
 
     async getCompletedWithdrawals() {
-      if (!this.activeChain) {
+      if (!this.activeChain || !this.web3) {
         return;
       }
 
@@ -1466,28 +1731,40 @@ export const useContractsStore = defineStore('contracts', {
           }
         );
 
-        /** Map the withdrawals by adding a timestamp to the object from withdrawal block */
-        const constructedWithdrawals = withdrawals.map(
-          async (withdrawal: any) => {
-            if (!this.web3) {
-              return;
-            }
-
-            const block = await this.web3.eth.getBlock(withdrawal.blockNumber);
-            const timestamp = block.timestamp;
-
-            return {
-              address: withdrawal.returnValues.recipient, //Recipients address
-              amount: formatUint256toNumber(withdrawal.returnValues.amount),
-              date: new Date(Number(timestamp) * 1000),
-              status: 'complete',
-              token: withdrawal.returnValues.token
-            };
-          }
+        /** Header only (no transactions), each block fetched once */
+        const web3 = this.web3;
+        const blockTime = makeBlockTimeLoader((blockNumber) =>
+          web3.eth.getBlock(blockNumber)
         );
 
-        /** Resolve mapping promises */
-        this.completedWithdrawals = await Promise.all(constructedWithdrawals);
+        /** Each row stands on its own: one failed block lookup drops that row, not the whole list */
+        const rows = await Promise.allSettled(
+          withdrawals.map(
+            async (withdrawal: any) =>
+              ({
+                address: withdrawal.returnValues.recipient, //Recipients address
+                amount: formatUint256toNumber(withdrawal.returnValues.amount),
+                date: new Date(
+                  (await blockTime(withdrawal.blockNumber)) * 1000
+                ),
+                status: 'complete',
+                token: withdrawal.returnValues.token
+              }) as IWithdrawal
+          )
+        );
+
+        this.completedWithdrawals = rows.flatMap((row, index) => {
+          if (row.status === 'fulfilled') {
+            return [row.value];
+          }
+
+          console.error(
+            'Error loading a completed withdrawal: ',
+            withdrawals[index].transactionHash,
+            (row.reason as Error)?.message
+          );
+          return [];
+        });
       } catch (error) {
         console.error(
           'Error fetching completed withdrawals',
@@ -1513,6 +1790,9 @@ export const useContractsStore = defineStore('contracts', {
       this.updateLoading({history: true});
 
       try {
+        /** Fetch the WithdrawRequest events once for this vault and time window; cancellations use them to find recipients */
+        await this.getWithdrawRequests();
+
         /** Fetch cancelled withdrawals */
         await this.getCancelledWithdrawals();
 
@@ -1556,20 +1836,6 @@ export const useContractsStore = defineStore('contracts', {
         this.vaultContract = new this.web3.eth.Contract(
           this.activeChain.vaultAbi,
           address
-        );
-
-        /** Set USDC contract */
-        this.usdc.contract = new this.web3.eth.Contract(
-          usdcABI,
-          this.activeChain.currencies.find((item) => item.name === 'USDC')
-            ?.value || ''
-        );
-
-        /** Set XAUT contract */
-        this.xaut.contract = new this.web3.eth.Contract(
-          xautABI,
-          this.activeChain.currencies.find((item) => item.name === 'XAUT0')
-            ?.value || ''
         );
 
         /** Get the list of all withdrawals */
@@ -1648,6 +1914,8 @@ export const useContractsStore = defineStore('contracts', {
 
         /** If the Vault contract has already been created stop propagation otherwise proceed to Vault creation */
         if (vaultExists) {
+          /** contractIndex indexes the vaults the user owns, not factoryContracts — keep the registry this vault belongs to */
+          this.activeFactory = availableFactories[this.contractIndex] ?? null;
           await this.setVaultContract(this.vaultAddress);
           toast.remove(loadingToast);
           return;
@@ -1678,9 +1946,15 @@ export const useContractsStore = defineStore('contracts', {
           );
         }
 
-        await this.setVaultContract(
+        /** The new vault is now the user's only one: record it so it's listed and its address is used for balance reads */
+        const createdVault = String(
           factoryTransaction.events.ContractInitialized.address
         );
+        this.activeFactory = this.factoryContracts[this.contractIndex];
+        this.vaultAddress = createdVault;
+        this.availableVaults = [createdVault];
+        this.contractIndex = 0;
+        await this.setVaultContract(createdVault);
 
         toast.remove(loadingToast);
         toast.success(`Vault contract successfully created`);
@@ -1713,6 +1987,11 @@ export const useContractsStore = defineStore('contracts', {
 
     async updateActiveVault(vaultId: number) {
       this.contractIndex = vaultId;
+
+      /** Clear the previous vault's balances and requests, so they're never shown for the new one */
+      this.resetVaultBalances();
+      this.resetWithdrawalsList();
+
       await this.connectContract();
     },
 

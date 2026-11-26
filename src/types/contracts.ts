@@ -1,10 +1,6 @@
 import type {Contract, ContractAbi, Web3} from 'web3';
 import type {IFormField} from '@/types/general.ts';
-import type {
-  IVaultBalance,
-  IVaultEvent,
-  IWithdrawRequestData
-} from '@/types/vault.ts';
+import type {IVaultEvent, IWithdrawRequestData} from '@/types/vault.ts';
 
 export interface IContractsInputs {
   privateKey: string;
@@ -25,6 +21,7 @@ export interface IContractsLoading {
   withdraw: boolean;
   cancelWithdraw: boolean;
   completeWithdraw: boolean;
+  vaultBalance: boolean;
 }
 
 export interface IContractsHash {
@@ -101,25 +98,42 @@ export interface ITransactionGas {
   maxPriorityFeePerGas: number;
 }
 
-export interface IContractBalance {
-  eth: number;
-  usdt: number;
-}
-
 export interface IRpc {
   name: string;
   url: string;
 }
 
+export type TBalanceSource = 'protocolToken' | 'paymentTokenId' | 'erc20';
+
 export interface IToken {
   name: string;
   value: string;
   id: number;
+  /** Where the token's available balance is read from (see CHAINS in constants.ts) */
+  balanceSource: TBalanceSource;
+  /** Offer the token in the currency picker even when its balance is zero */
+  alwaysListed?: boolean;
 }
 
-export interface ICurrency {
-  contract: Contract<ContractAbi> | null;
-  balance: number;
+/** Available balance per token, keyed by lowercase token address. null = the read failed */
+export type TTokenBalances = Record<string, number | null>;
+
+/** Everything the vault reports for one token, in token units (for display and debugging in Vue devtools) */
+export interface IVaultTokenBalance {
+  source: TBalanceSource;
+  /** What the app shows and lets the user withdraw */
+  availableBalance: number;
+  balance?: number;
+  withdrawalReservation?: number;
+  processPaymentReservation?: number;
+  frozenPaymentTokenAmount?: number;
+}
+
+/** An open withdrawal reservation read from vault state */
+export interface IOpenReservation {
+  token: string;
+  amount: bigint;
+  unlockTime: bigint;
 }
 
 export interface IChain {
@@ -147,8 +161,9 @@ export interface IContractsStore {
   connectedAccount: string;
   allAccounts: string[];
   balance: string;
-  contractBalance: IContractBalance;
-  vaultBalance: IVaultBalance | null;
+  balances: TTokenBalances;
+  /** Full per-token breakdown keyed by token name (USDT0, USDC, XAUT0…); null = the read failed */
+  vaultBalance: Record<string, IVaultTokenBalance | null>;
   amountDecimalPoints: number;
   inputs: IContractsInputs;
   loading: IContractsLoading;
@@ -164,6 +179,8 @@ export interface IContractsStore {
   error: IContractsErrors;
   vaultContract: Contract<ContractAbi> | null;
   factoryContracts: Contract<ContractAbi>[];
+  /** Registry (factory) contract the current vault belongs to */
+  activeFactory: Contract<ContractAbi> | null;
   transactionGas: ITransactionGas;
   activeRequest: IWithdrawal | null;
   lastBlock: number;
@@ -176,8 +193,6 @@ export interface IContractsStore {
   daysOffset: number;
   thresholdPrompt: string;
   rpc: IRpc;
-  usdc: ICurrency;
-  xaut: ICurrency;
   currencyToken: string;
   tokens: IToken[];
   activeChain: IChain | null;

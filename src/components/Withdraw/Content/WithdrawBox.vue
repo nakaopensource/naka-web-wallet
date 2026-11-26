@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import NetworkIcon from '@/components/Withdraw/NetworkIcon.vue';
+import TokenIcon from '@/components/UI/TokenIcon.vue';
 import {useContractsStore} from '@/stores/contracts.ts';
 
 /*Props*/
@@ -21,10 +21,14 @@ const contractsStore = useContractsStore();
     </div>
     <div class="box__chain">
       <div class="box__chain--text">Supported:</div>
-      <div class="box__chain--network" v-if="contractsStore.activeChain">
-        <NetworkIcon />
+      <!-- Follows the currency picked on the card / in the withdraw form -->
+      <div
+        class="box__chain--network"
+        v-if="contractsStore.activeChain && contractsStore.selectedCurrency"
+      >
+        <TokenIcon :name="contractsStore.selectedCurrency" />
         <span
-          >{{ contractsStore.activeChain.currencies[0].name }} on
+          >{{ contractsStore.selectedCurrency }} on
           {{ contractsStore.activeChain.name }}</span
         >
       </div>

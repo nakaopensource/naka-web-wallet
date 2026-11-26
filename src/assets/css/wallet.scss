@@ -235,6 +235,12 @@
           &--step-amount {
             @include framework.grid-gap(calc(#{framework.$defaultGridGap} * 2));
           }
+          &--fields {
+            @include framework.grid-gap(12px);
+          }
+          &--switch {
+            justify-self: start;
+          }
           &--amount {
             @include framework.grid-column-layout(
               1fr auto auto,
@@ -253,7 +259,8 @@
                 );
                 align-items: center;
                 &--currency {
-                  width: 80px;
+                  min-width: 80px;
+                  padding: 0 16px 0 12px;
                   @include framework.flex-layout(flex, center, center, unset);
                 }
                 &.error {
@@ -290,9 +297,15 @@
                 @include framework.font-style('default', 'gray-400');
                 height: 100%;
                 &--text {
-                  @include framework.flex-layout(flex, center, center, unset);
+                  @include framework.flex-layout(flex, center, center, 8px);
                   height: 100%;
                   user-select: none;
+                  color: map.get(framework.$colors, 'gray-800');
+                  font-weight: 500;
+                  .token-icon {
+                    width: 18px;
+                    height: 18px;
+                  }
                 }
                 select {
                   border: unset;
@@ -303,6 +316,13 @@
                   padding: unset;
                   height: 100%;
                 }
+              }
+              &__hint {
+                position: absolute;
+                top: 100%;
+                left: 0;
+                padding-top: 4px;
+                @include framework.font-style('12', 'gray-400');
               }
               &__max {
                 height: 48px;
@@ -535,28 +555,55 @@
       font-weight: 300;
       line-height: 1;
     }
+    /* Contract tiles: same surface, radius and orange selection border as the withdraw boxes */
     &--tabs {
       @include framework.flex-layout(
-        inline-flex,
+        flex,
         unset,
-        center,
-        framework.$defaultGridGap
+        stretch,
+        calc(#{framework.$defaultGridGap} / 2)
       );
       flex-wrap: wrap;
       .tab {
-        padding: calc(#{framework.$defaultPadding} / 2);
+        display: grid;
+        gap: 3px;
+        justify-items: start;
+        min-width: 140px;
+        padding: calc(#{framework.$defaultPadding} / 2)
+          calc(#{framework.$defaultPadding} * 0.75);
         background-color: map.get(framework.$colors, 'gray-50');
-        border-radius: framework.$defaultRem;
+        border: 2px solid map.get(framework.$colors, 'gray-50');
+        border-radius: framework.$defaultRadius;
+        text-align: left;
+        transition: border-color 0.1s ease;
+        &__label {
+          @include framework.font-style('10', 'gray-400', 1);
+          text-transform: uppercase;
+          letter-spacing: 0.02em;
+        }
+        &__address {
+          @include framework.font-style('13', 'gray-800', 1);
+          font-weight: 500;
+          font-variant-numeric: tabular-nums;
+        }
+        &:hover {
+          border-color: map.get(framework.$colors, 'gray-200');
+        }
         &.active {
-          border: 2px solid map.get(framework.$colors, 'orange-400');
+          border-color: map.get(framework.$colors, 'orange-400');
+          cursor: default;
+        }
+        &:focus-visible {
+          outline: 2px solid map.get(framework.$colors, 'orange-400');
+          outline-offset: 2px;
         }
       }
     }
     &--tabs-wrap {
-      @include framework.grid-gap(calc(#{framework.$defaultGridGap} / 2));
+      @include framework.grid-gap(6px);
       .tab {
         &__title {
-          @include framework.font-style('20', 'gray-800');
+          @include framework.font-style('default', 'gray-800');
           font-weight: 500;
         }
       }
@@ -619,11 +666,10 @@
                     center,
                     6px
                   );
-                  .currency {
-                    &__icon {
-                      width: 13px;
-                      height: 13px;
-                    }
+                  .token-icon {
+                    width: 13px;
+                    height: 13px;
+                    flex: none;
                   }
                 }
               }
@@ -678,8 +724,15 @@
                   .value {
                     &__number {
                       @include framework.font-style('55', 'gray-50');
+                      /* Shrink long amounts to fit the card: width left after the
+                         insets and the ticker, divided by the digit count (--chars) */
+                      font-size: min(
+                        #{map.get(framework.$textSizes, '55')},
+                        calc((100cqi - 180px) / (var(--chars, 8) * 0.58))
+                      );
                       line-height: 0.8;
                       font-weight: 500;
+                      white-space: nowrap;
                     }
                     &__currency {
                       @include framework.font-style('24', 'gray-50');
@@ -687,6 +740,39 @@
                     }
                   }
                 }
+                &--skeleton {
+                  width: 240px;
+                  max-width: 100%;
+                  height: 44px;
+                  border-radius: 10px;
+                  background: linear-gradient(
+                      90deg,
+                      rgba(map.get(framework.$colors, 'white'), 0.06) 0%,
+                      rgba(map.get(framework.$colors, 'white'), 0.14) 50%,
+                      rgba(map.get(framework.$colors, 'white'), 0.06) 100%
+                    )
+                    0 0 / 200% 100%;
+                  animation: card-shimmer 1.4s ease-in-out infinite;
+                }
+                /** Replaces the title on a failed read */
+                &--error {
+                  color: map.get(framework.$colors, 'gray-300');
+                  button {
+                    font-size: inherit;
+                    line-height: inherit;
+                    color: map.get(framework.$colors, 'gray-50');
+                    text-decoration: underline;
+                    text-underline-offset: 3px;
+                    padding-left: calc(#{framework.$defaultGridGap} / 4);
+                  }
+                }
+              }
+              /** Top-left, vertically centred on the 42px logo (top: 40px), left-aligned with the balance */
+              &__switch {
+                position: absolute;
+                z-index: 1;
+                top: 39px;
+                left: calc(40px + #{framework.$defaultPadding});
               }
             }
           }
@@ -1167,13 +1253,15 @@
               grid-row: 1;
               padding-bottom: calc(#{framework.$defaultPadding} / 2);
               .card {
+                /* The image is in flow here, so it sizes the surface */
+                &__surface {
+                  height: auto;
+                }
                 &__image {
                   padding: unset;
                   height: auto;
                   position: relative;
-                }
-                &__balance {
-                  bottom: calc(40px + calc(#{framework.$defaultPadding} / 2));
+                  display: block;
                 }
               }
             }
@@ -1243,6 +1331,10 @@
                     .value {
                       &__number {
                         font-size: map.get(framework.$textSizes, '32');
+                        font-size: min(
+                          #{map.get(framework.$textSizes, '32')},
+                          calc((100cqi - 100px) / (var(--chars, 8) * 0.58))
+                        );
                       }
                       &__currency {
                         font-size: map.get(framework.$textSizes, '14');
@@ -1253,6 +1345,15 @@
                 &__logo {
                   top: 25px;
                   right: 25px;
+                }
+                &__switch {
+                  top: 28px;
+                  left: calc(#{framework.$defaultPadding} * 1.5);
+                }
+                &__balance--skeleton {
+                  width: 160px;
+                  height: 26px;
+                  border-radius: 8px;
                 }
               }
             }
@@ -1407,5 +1508,218 @@
         }
       }
     }
+  }
+}
+
+/* Segmented control (components/UI/SegmentedControl.vue): currency and vault switches */
+$switch-ease: cubic-bezier(0.3, 0.7, 0.4, 1);
+
+.segmented {
+  position: relative;
+  isolation: isolate;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  border-radius: 100vh;
+  &__indicator {
+    position: absolute;
+    z-index: -1;
+    top: 4px;
+    bottom: 4px;
+    left: 0;
+    border-radius: 100vh;
+    &.ready {
+      transition:
+        transform 0.32s $switch-ease,
+        width 0.32s $switch-ease;
+    }
+  }
+  &__option {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    height: 36px;
+    padding: 0 14px;
+    border-radius: 100vh;
+    @include framework.font-style('14', null, 1);
+    font-weight: 500;
+    letter-spacing: 0.01em;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    transition: color 0.2s ease;
+    &.with-icon {
+      padding-left: 8px;
+    }
+    .token-icon {
+      width: 20px;
+      height: 20px;
+      flex: none;
+      transition: opacity 0.2s ease;
+    }
+    &:not(.active) .token-icon {
+      opacity: 0.7;
+    }
+    &:hover .token-icon {
+      opacity: 1;
+    }
+    &:focus-visible {
+      outline: 2px solid;
+      outline-offset: 2px;
+    }
+  }
+  /* On the black card */
+  &--dark {
+    background-color: rgba(map.get(framework.$colors, 'white'), 0.07);
+    box-shadow: inset 0 0 0 1px rgba(map.get(framework.$colors, 'white'), 0.09);
+    backdrop-filter: blur(12px);
+    .segmented {
+      &__indicator {
+        background-color: map.get(framework.$colors, 'gray-50');
+        box-shadow:
+          0 1px 2px rgba(map.get(framework.$colors, 'black'), 0.35),
+          0 6px 16px rgba(map.get(framework.$colors, 'black'), 0.35);
+      }
+      &__option {
+        color: rgba(map.get(framework.$colors, 'gray-50'), 0.62);
+        &:hover {
+          color: map.get(framework.$colors, 'gray-50');
+        }
+        &.active {
+          color: map.get(framework.$colors, 'gray-950');
+        }
+        &:focus-visible {
+          outline-color: rgba(map.get(framework.$colors, 'white'), 0.7);
+        }
+      }
+    }
+  }
+  /* On light surfaces (page, modal) */
+  &--light {
+    background-color: map.get(framework.$colors, 'gray-100');
+    .segmented {
+      &__indicator {
+        background-color: map.get(framework.$colors, 'white');
+        box-shadow:
+          0 1px 2px rgba(map.get(framework.$colors, 'black'), 0.08),
+          0 2px 8px rgba(map.get(framework.$colors, 'black'), 0.06);
+      }
+      &__option {
+        color: map.get(framework.$colors, 'gray-500');
+        &:hover {
+          color: map.get(framework.$colors, 'gray-800');
+        }
+        &.active {
+          color: map.get(framework.$colors, 'gray-950');
+        }
+        &:focus-visible {
+          outline-color: rgba(map.get(framework.$colors, 'gray-950'), 0.5);
+        }
+      }
+    }
+  }
+}
+
+.token-icon {
+  display: inline-block;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  &--fallback {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background-color: map.get(framework.$colors, 'gray-400');
+    @include framework.font-style('10', 'white', 1);
+    font-weight: 600;
+  }
+}
+
+/* Positioning context for everything drawn on the card */
+.connect__withdraw--card .card__surface {
+  position: relative;
+  height: 100%;
+  /* Lets the balance size itself to the card width (cqi units) */
+  container-type: inline-size;
+}
+
+/* Balance number on the card: short fade/slide when the token changes */
+.card-balance-enter-active,
+.card-balance-leave-active {
+  transition:
+    opacity 0.18s ease,
+    transform 0.18s ease;
+}
+.card-balance-enter-from {
+  opacity: 0;
+  transform: translateY(6px);
+}
+.card-balance-leave-to {
+  opacity: 0;
+  transform: translateY(-6px);
+}
+
+@keyframes card-shimmer {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -100% 0;
+  }
+}
+
+@media screen and (max-width: 575px) {
+  .segmented {
+    padding: 3px;
+    &__indicator {
+      top: 3px;
+      bottom: 3px;
+    }
+    &__option {
+      gap: 6px;
+      height: 30px;
+      padding: 0 10px;
+      @include framework.font-style('12', null, 1);
+      &.with-icon {
+        padding-left: 6px;
+      }
+      .token-icon {
+        width: 16px;
+        height: 16px;
+      }
+    }
+    /* Inactive options collapse to their icon (used on the card, so the switch clears the logo) */
+    &--collapsible .segmented__option.with-icon:not(.active) {
+      padding: 0 7px;
+      .segmented__label {
+        display: none;
+      }
+    }
+  }
+  /* The modal title is centred on phones: follow it */
+  .modal__withdraw--connected .connected__form--switch {
+    justify-self: center;
+  }
+  /* Contract tiles share the row on phones (two side by side, a third wraps) */
+  .withdraw__screen--tabs .tab {
+    flex: 1 1 120px;
+    min-width: 0;
+    padding: 7px 10px;
+    .tab__address {
+      font-size: map.get(framework.$textSizes, '12');
+    }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .segmented__indicator.ready,
+  .segmented__option,
+  .segmented__option .token-icon,
+  .card-balance-enter-active,
+  .card-balance-leave-active {
+    transition: none;
+  }
+  .withdraw__screen--connect .connect__withdraw--card .card__balance--skeleton {
+    animation: none;
   }
 }

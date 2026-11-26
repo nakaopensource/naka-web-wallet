@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import {computed} from 'vue';
 import {useContractsStore} from '@/stores/contracts.ts';
 import Modal from '@/components/UI/Modal.vue';
 import ConnectedWallet from '@/components/Withdraw/Form/ConnectedWallet.vue';
@@ -11,6 +12,20 @@ import Tabs from '@/components/Withdraw/Content/Tabs.vue';
 
 /*Global state*/
 const contractsStore = useContractsStore();
+
+/*Computed*/
+/** Name of the pending request's token (it can be XAUT0, not just the chain's first currency) */
+const activeRequestCurrency = computed(() => {
+  const chain = contractsStore.activeChain;
+  const token = contractsStore.activeRequest?.token.toLowerCase();
+
+  return (
+    chain?.currencies.find((currency) => currency.value.toLowerCase() === token)
+      ?.name ??
+    chain?.currencies[0].name ??
+    ''
+  );
+});
 
 const closeConnectedModal = () => {
   contractsStore.updateModal({withdrawConnected: false});
@@ -161,7 +176,7 @@ const closeOvertimeModal = () => {
       <div class="statement__label">Amount:</div>
       <div class="statement__value" v-if="contractsStore.activeChain">
         {{ formatWithAtLeastTwoDecimals(contractsStore.activeRequest.amount) }}
-        {{ contractsStore.activeChain.currencies[0].name }}
+        {{ activeRequestCurrency }}
       </div>
     </div>
     <div
@@ -206,7 +221,8 @@ const closeOvertimeModal = () => {
         </div>
       </div>
 
-      <Tabs v-if="contractsStore.availableVaults.length > 1" />
+      <!-- Always shown, so it's clear which vault is active -->
+      <Tabs v-if="contractsStore.availableVaults.length" />
 
       <div class="withdraw__screen--row withdraw__screen--connect">
         <WithdrawBox
@@ -223,7 +239,7 @@ const closeOvertimeModal = () => {
           buttonText="Withdraw external"
         />
         <div class="spacer"></div>
-        <Card :amount="contractsStore.contractBalance.usdt" />
+        <Card />
       </div>
       <HistoryList />
     </div>
