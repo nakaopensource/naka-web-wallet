@@ -2,15 +2,14 @@
 import {RouterLink} from 'vue-router';
 import {useContractsStore} from '@/stores/contracts.ts';
 import Modal from '@/components/UI/Modal.vue';
-import {copyToClipboard} from '@/utils/helpers.ts';
+import {copyToClipboard, shortenAddress} from '@/utils/helpers.ts';
 
 /*Global state*/
 const contractsStore = useContractsStore();
 
 /*Modal*/
 const disconnectMetamask = () => {
-  contractsStore.updateModal({connect: false});
-  contractsStore.disconnectMetamask();
+  contractsStore.disconnectWallet();
 };
 
 const copyAddress = () => {
@@ -44,9 +43,7 @@ const copyAddress = () => {
     </div>
     <div class="connect__address" @click="copyAddress">
       <span>
-        {{
-          `${contractsStore.connectedAccount.substring(0, 6)}••••${contractsStore.connectedAccount.slice(-4)}`
-        }}
+        {{ shortenAddress(contractsStore.connectedAccount) }}
       </span>
       <svg
         width="20"
@@ -109,7 +106,7 @@ const copyAddress = () => {
               connected:
                 contractsStore.vaultContract && !contractsStore.loading.connect
             }"
-            @click="contractsStore.connectMetamask"
+            @click="contractsStore.connectMetamask(true)"
           >
             <svg
               width="16"

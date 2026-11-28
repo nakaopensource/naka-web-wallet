@@ -22,7 +22,7 @@ const cancelForm = () => {
 
 const setMaxAmount = () => {
   contractsStore.updateFormField(
-    contractsStore.contractBalance.usdt,
+      contractsStore.selectedBalance,
     'connected',
     'amount'
   );

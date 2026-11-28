@@ -212,7 +212,7 @@ onMounted(() => {
             connected:
               contractsStore.vaultContract && !contractsStore.loading.connect
           }"
-          @click="contractsStore.connectMetamask"
+          @click="contractsStore.connectMetamask(true)"
         >
           <svg
             width="16"

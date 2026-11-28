@@ -253,7 +253,7 @@
                 );
                 align-items: center;
                 &--currency {
-                  width: 80px;
+                  padding: 0 framework.$defaultPadding;
                   @include framework.flex-layout(flex, center, center, unset);
                 }
                 &.error {
@@ -289,19 +289,22 @@
               &__currency {
                 @include framework.font-style('default', 'gray-400');
                 height: 100%;
+                @include framework.flex-layout(
+                  flex,
+                  center,
+                  center,
+                  calc(#{framework.$defaultPadding} / 2)
+                );
+                .currency {
+                  &__icon {
+                    width: 20px;
+                    height: 20px;
+                  }
+                }
                 &--text {
                   @include framework.flex-layout(flex, center, center, unset);
                   height: 100%;
                   user-select: none;
-                }
-                select {
-                  border: unset;
-                  border-radius: framework.$formRadius;
-                  font-family: 'NeueMontreal', sans-serif;
-                  @include framework.font-style('default', 'gray-400');
-                  background: unset;
-                  padding: unset;
-                  height: 100%;
                 }
               }
               &__max {
@@ -312,6 +315,10 @@
                 @include framework.font-style('default', 'gray-950');
                 border-radius: 100vh;
                 font-weight: 600;
+              }
+              &__available {
+                grid-column: 1 / -1;
+                @include framework.font-style('12', 'gray-500');
               }
             }
             .error {
@@ -687,6 +694,13 @@
                     }
                   }
                 }
+              }
+            }
+            .currency {
+              &__switch {
+                position: absolute;
+                top: 40px;
+                left: 40px;
               }
             }
           }
@@ -1082,6 +1096,68 @@
   }
 }
 
+.currency {
+  &__switch {
+    @include framework.flex-layout(
+      inline-flex,
+      unset,
+      unset,
+      calc(#{framework.$defaultPadding} / 4)
+    );
+    border-radius: 100vh;
+    padding: calc(#{framework.$defaultPadding} / 4);
+    justify-self: start;
+    &--item {
+      @include framework.flex-layout(
+        flex,
+        unset,
+        center,
+        calc(#{framework.$defaultPadding} / 2)
+      );
+      padding: calc(#{framework.$defaultPadding} / 2) framework.$defaultPadding;
+      border-radius: 100vh;
+      @include framework.font-style('14', 'gray-500');
+      font-weight: 500;
+      transition: all 0.2s ease;
+      .currency {
+        &__icon {
+          width: 20px;
+          height: 20px;
+          flex-shrink: 0;
+        }
+      }
+    }
+    &--light {
+      background-color: map.get(framework.$colors, 'gray-100');
+      .currency {
+        &__switch {
+          &--item {
+            &.active {
+              background-color: map.get(framework.$colors, 'white');
+              color: map.get(framework.$colors, 'gray-950');
+            }
+          }
+        }
+      }
+    }
+    &--dark {
+      background-color: rgba(map.get(framework.$colors, 'white'), 0.06);
+      border: 1px solid rgba(map.get(framework.$colors, 'white'), 0.15);
+      .currency {
+        &__switch {
+          &--item {
+            color: map.get(framework.$colors, 'gray-50');
+            &.active {
+              background-color: map.get(framework.$colors, 'gray-50');
+              color: map.get(framework.$colors, 'gray-950');
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
 @media screen and (min-width: 1200px) {
   .withdraw {
     &__screen {
@@ -1253,6 +1329,23 @@
                 &__logo {
                   top: 25px;
                   right: 25px;
+                }
+              }
+              .currency {
+                &__switch {
+                  top: 25px;
+                  left: 25px;
+                  &--item {
+                    padding: calc(#{framework.$defaultPadding} / 4)
+                      calc(#{framework.$defaultPadding} / 2);
+                    font-size: map.get(framework.$textSizes, '12');
+                    .currency {
+                      &__icon {
+                        width: 16px;
+                        height: 16px;
+                      }
+                    }
+                  }
                 }
               }
             }

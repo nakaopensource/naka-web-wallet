@@ -11,6 +11,12 @@ export interface IReservation {
   unlockTime: bigint;
 }
 
+export interface IOpenReservation {
+  token: string;
+  amount: bigint;
+  unlockTime: bigint;
+}
+
 export interface IWithdrawRequestData {
   token: string;
   amount: bigint;

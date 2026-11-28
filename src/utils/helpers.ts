@@ -62,30 +62,28 @@ export const openNewTab = (url: string) => {
 export const formatUint256toNumber = (value: bigint, decimals = 6) => {
   const divisor = 10n ** BigInt(decimals);
   const integerPart = value / divisor;
-  const fractionalPart = value % divisor;
+  const fractionalPart = (value % divisor).toString().padStart(decimals, '0');
 
-  return Number(integerPart) + Number(fractionalPart) / Number(divisor);
+  /** Parse from a decimal string so there is no float noise (12.894055999999999) */
+  return Number(`${integerPart}.${fractionalPart}`);
 };
 
 export const formatNumberToUint256 = (value: number, decimals = 6) => {
   return BigInt(Math.round(value * 10 ** decimals));
 };
 
-export const formatWithAtLeastTwoDecimals = (value: number) => {
-  const [integer, decimals] = value.toString().split('.');
-
-  if (!decimals) {
-    /** No decimal part, force two decimals */
-    return parseFloat(integer).toFixed(2);
+export const formatWithAtLeastTwoDecimals = (
+  value: number | null,
+  maxDecimals = 6
+) => {
+  if (value === null || !Number.isFinite(value)) {
+    return '0.00';
   }
 
-  if (decimals.length === 1) {
-    /** Only 1 decimal digit, add one more zero */
-    return `${integer}.${decimals}0`;
-  }
+  /** Round to the max decimals, then trim trailing zeros but keep at least two decimals */
+  const [integer, decimals = ''] = value.toFixed(maxDecimals).split('.');
 
-  /** Already has 2 or more decimals, return as is */
-  return value;
+  return `${integer}.${decimals.replace(/0+$/, '').padEnd(2, '0')}`;
 };
 
 export const validateAddress = (address: string) => {
@@ -95,4 +93,15 @@ export const validateAddress = (address: string) => {
 
   const addressRegEx = /^0x[a-fA-F0-9]{40}$/;
   return addressRegEx.test(address);
+};
+
+/**
+ * Shortens a wallet or contract address, e.g. 0x1234...abcd
+ * */
+export const shortenAddress = (address: string, start = 6, end = 4) => {
+  if (!address || address.length <= start + end) {
+    return address || '';
+  }
+
+  return `${address.substring(0, start)}••••${address.slice(-end)}`;
 };

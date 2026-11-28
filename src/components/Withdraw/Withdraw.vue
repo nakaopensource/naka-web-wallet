@@ -223,7 +223,7 @@ const closeOvertimeModal = () => {
           buttonText="Withdraw external"
         />
         <div class="spacer"></div>
-        <Card :amount="contractsStore.contractBalance.usdt" />
+        <Card />
       </div>
       <HistoryList />
     </div>

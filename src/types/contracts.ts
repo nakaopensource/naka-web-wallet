@@ -171,6 +171,7 @@ export interface IContractsStore {
   completedWithdrawals: IWithdrawal[];
   cancelledWithdrawals: IWithdrawal[];
   vaultAddress: string;
+  vaultMissing: boolean;
   availableVaults: string[];
   blocksOffset: number;
   daysOffset: number;

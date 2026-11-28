@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import NetworkIcon from '@/components/Withdraw/NetworkIcon.vue';
+import CurrencyIcon from '@/components/Withdraw/CurrencyIcon.vue';
 import {useContractsStore} from '@/stores/contracts.ts';
 
 /*Props*/
@@ -22,11 +22,11 @@ const contractsStore = useContractsStore();
     <div class="box__chain">
       <div class="box__chain--text">Supported:</div>
       <div class="box__chain--network" v-if="contractsStore.activeChain">
-        <NetworkIcon />
-        <span
-          >{{ contractsStore.activeChain.currencies[0].name }} on
-          {{ contractsStore.activeChain.name }}</span
-        >
+        <CurrencyIcon :name="contractsStore.selectedCurrency" />
+        <span>
+          {{ contractsStore.selectedCurrency }} on
+          {{ contractsStore.activeChain.name }}
+        </span>
       </div>
     </div>
     <div class="box__button">

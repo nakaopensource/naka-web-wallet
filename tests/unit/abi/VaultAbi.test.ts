@@ -55,8 +55,7 @@ const BALANCE_KEY_BY_CHAIN: Record<number, string> = {
 const REQUIRED_EVENTS = [
   'WithdrawRequest',
   'Withdrawal',
-  'CanceledWithdrawReservation',
-  'ContractInitialized'
+  'CanceledWithdrawReservation'
 ];
 
 describe.each(CHAINS.map((chain) => [chain.name, chain] as const))(
@@ -86,14 +85,14 @@ describe.each(CHAINS.map((chain) => [chain.name, chain] as const))(
     });
 
     describe('registry methods called by the store', () => {
-      it.each([
-        ['createVault', ['address']],
-        ['getVaultAddressByOwner', ['address']]
-      ])('%s exists with the expected input signature', (method, inputs) => {
-        const fn = findFunction(registryAbi, method);
-        expect(fn, `${method} missing from registry ABI`).toBeDefined();
-        expect(inputTypes(fn)).toEqual(inputs);
-      });
+      it.each([['getVaultAddressByOwner', ['address']]])(
+        '%s exists with the expected input signature',
+        (method, inputs) => {
+          const fn = findFunction(registryAbi, method);
+          expect(fn, `${method} missing from registry ABI`).toBeDefined();
+          expect(inputTypes(fn)).toEqual(inputs);
+        }
+      );
 
       it(`config reservationLockCall "${chain.reservationLockCall}" exists on the registry`, () => {
         const fn = findFunction(registryAbi, chain.reservationLockCall);
@@ -125,6 +124,42 @@ describe.each(CHAINS.map((chain) => [chain.name, chain] as const))(
           expect.arrayContaining(['amount', 'unlockTime'])
         );
       });
+    });
+
+    describe('reservation lookup used by getOpenReservation', () => {
+      if (chain.id === 43114) {
+        it('vault exposes the per-token reservation getter', () => {
+          const fn = findFunction(
+            vaultAbi,
+            'getWithdrawPaymentTokenReservationByTokenId'
+          );
+          expect(inputTypes(fn)).toEqual(['uint16']);
+          expect(structKeys(fn)).toEqual(
+            expect.arrayContaining(['amount', 'unlockTime'])
+          );
+        });
+
+        it('registry exposes the whitelisted token getters', () => {
+          expect(
+            findFunction(registryAbi, 'getAllAvailableWhitelistedTokens')
+          ).toBeDefined();
+
+          const byIndex = findFunction(
+            registryAbi,
+            'getAvailableWhitelistedTokenByIndex'
+          );
+          expect(inputTypes(byIndex)).toEqual(['uint256']);
+          expect(structKeys(byIndex)).toEqual(
+            expect.arrayContaining(['tokenId', 'tokenAddress'])
+          );
+        });
+      } else {
+        it('registry has no getAllAvailableWhitelistedTokens (the store uses its absence to detect single-token vaults)', () => {
+          expect(
+            findFunction(registryAbi, 'getAllAvailableWhitelistedTokens')
+          ).toBeUndefined();
+        });
+      }
     });
 
     describe('events read by the store', () => {

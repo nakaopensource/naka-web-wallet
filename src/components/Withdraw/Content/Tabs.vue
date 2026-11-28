@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import {useContractsStore} from '@/stores/contracts.ts';
+import {shortenAddress} from '@/utils/helpers.ts';
 
 /*Global state*/
 const contractsStore = useContractsStore();
@@ -21,7 +22,7 @@ const setActiveVault = async (vaultId: number) => {
         :class="{active: contractsStore.contractIndex === vaultId}"
         @click="setActiveVault(vaultId)"
       >
-        {{ vault.substring(0, 20) + '...' + vault.slice(-4) }}
+        {{ shortenAddress(vault) }}
       </button>
     </div>
   </div>

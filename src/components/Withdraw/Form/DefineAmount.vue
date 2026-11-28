@@ -2,6 +2,9 @@
 import type {IFormField} from '@/types/general.ts';
 import {ref, watch} from 'vue';
 import {useContractsStore} from '@/stores/contracts.ts';
+import CurrencySwitch from '@/components/Withdraw/CurrencySwitch.vue';
+import CurrencyIcon from '@/components/Withdraw/CurrencyIcon.vue';
+import {formatWithAtLeastTwoDecimals} from '@/utils/helpers.ts';
 
 /*Props */
 const props = defineProps<{
@@ -43,11 +46,7 @@ const checkBalance = () => {
     return;
   }
 
-  if (contractsStore.currencyToken) {
-    return;
-  }
-
-  if (contractsStore.contractBalance.usdt >= props.amountData.value) {
+  if (contractsStore.selectedBalance >= props.amountData.value) {
     return;
   }
 
@@ -56,7 +55,7 @@ const checkBalance = () => {
 
 /*Watchers*/
 watch(
-  () => props.amountData.value,
+  () => [props.amountData.value, contractsStore.currencyToken],
   () => {
     checkBalance();
   }
@@ -66,6 +65,7 @@ watch(
 <template>
   <div class="connected__form--step-amount">
     <div class="modal__title">Define amount</div>
+    <CurrencySwitch />
     <div class="connected__form--amount">
       <div class="amount__wrap" :class="{error: errorActive}">
         <input
@@ -105,27 +105,10 @@ watch(
       </div>
       <div class="amount__wrap amount__wrap--currency">
         <div class="amount__currency">
-          <div
-            class="amount__currency--text"
-            v-if="
-              contractsStore.tokens.length === 1 && contractsStore.activeChain
-            "
-          >
-            {{ contractsStore.activeChain.currencies[0].name }}
+          <CurrencyIcon :name="contractsStore.selectedCurrency" />
+          <div class="amount__currency--text">
+            {{ contractsStore.selectedCurrency }}
           </div>
-          <select
-            v-if="contractsStore.tokens.length > 1"
-            name="token"
-            id="token"
-            v-model="contractsStore.currencyToken"
-          >
-            <option
-              v-for="currency in contractsStore.tokens"
-              :value="currency.value"
-            >
-              {{ currency.name }}
-            </option>
-          </select>
         </div>
       </div>
       <button
@@ -136,6 +119,11 @@ watch(
       >
         MAX
       </button>
+      <div class="amount__available">
+        Available:
+        {{ formatWithAtLeastTwoDecimals(contractsStore.selectedBalance) }}
+        {{ contractsStore.selectedCurrency }}
+      </div>
       <div class="error__text" v-if="errorActive">
         The entered amount is higher than your balance
       </div>

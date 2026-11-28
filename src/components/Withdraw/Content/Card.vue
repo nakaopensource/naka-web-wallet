@@ -1,9 +1,7 @@
 <script setup lang="ts">
 import {formatWithAtLeastTwoDecimals} from '@/utils/helpers.ts';
 import {useContractsStore} from '@/stores/contracts.ts';
-
-/*Props*/
-const props = defineProps<{amount: number}>();
+import CurrencySwitch from '@/components/Withdraw/CurrencySwitch.vue';
 
 /*Global state*/
 const contractsStore = useContractsStore();
@@ -18,6 +16,7 @@ const contractsStore = useContractsStore();
       width="592"
       height="358"
     />
+    <CurrencySwitch variant="dark" />
     <div class="card__logo">
       <svg
         width="42"
@@ -33,14 +32,12 @@ const contractsStore = useContractsStore();
       </svg>
     </div>
     <div class="card__balance">
-      <div class="card__balance--title">Balance</div>
+      <div class="card__balance--title">Available balance</div>
       <div class="card__balance--value">
         <div class="value__number">
-          {{ formatWithAtLeastTwoDecimals(props.amount) }}
+          {{ formatWithAtLeastTwoDecimals(contractsStore.selectedBalance) }}
         </div>
-        <div class="value__currency" v-if="contractsStore.activeChain">
-          {{ contractsStore.activeChain.currencies[0].name }}
-        </div>
+        <div class="value__currency">{{ contractsStore.selectedCurrency }}</div>
       </div>
     </div>
   </div>

@@ -27,10 +27,9 @@ import {metamaskSdk} from '@/utils/metamask.ts';
 import usdcABI from '@/assets/abi/USDC.json';
 import xautABI from '@/assets/abi/XAUT.json';
 import type {
-  IBlock,
   ICancelledWithdrawReservationData,
+  IOpenReservation,
   IReservation,
-  IVaultBalance,
   IVaultEvent,
   IWhitelistedToken,
   IWithdrawRequestData
@@ -40,6 +39,7 @@ import {
   formatNumberToUint256,
   formatUint256toNumber,
   isMobileChrome,
+  shortenAddress,
   validateAddress
 } from '@/utils/helpers.ts';
 import {markRaw} from 'vue';
@@ -140,6 +140,7 @@ export const useContractsStore = defineStore('contracts', {
     lastBlock: 0,
     withdrawalRequests: [],
     vaultAddress: '',
+    vaultMissing: false,
     blocksOffset: 5000,
     completedWithdrawals: [],
     cancelledWithdrawals: [],
@@ -222,10 +223,32 @@ export const useContractsStore = defineStore('contracts', {
 
       return (
         state.activeChain.currencies.find(
-          (item) => item.value === state.currencyToken
+          (item) =>
+            item.value.toLowerCase() === state.currencyToken.toLowerCase()
         )?.name || state.activeChain.currencies[0].name
       );
-    }
+    },
+    selectedBalance: (state) => {
+      if (!state.activeChain) {
+        return 0;
+      }
+
+      const name = state.activeChain.currencies.find(
+        (item) => item.value.toLowerCase() === state.currencyToken.toLowerCase()
+      )?.name;
+
+      if (name === 'USDC') {
+        return state.usdc.balance;
+      }
+
+      if (name === 'XAUT0') {
+        return state.xaut.balance;
+      }
+
+      return state.contractBalance.usdt;
+    },
+    /** Avalanche always has XAUT0 in the list, Polygon only tokens with balance */
+    showCurrencySwitch: (state): boolean => state.tokens.length > 1
   },
   actions: {
     async initializeWeb3(provider?: any) {
@@ -427,7 +450,7 @@ export const useContractsStore = defineStore('contracts', {
       }
     },
 
-    async connectMetamask() {
+    async connectMetamask(pickAccount = false) {
       if (!this.web3) {
         toast.info('no Web3 provided');
         return;
@@ -457,6 +480,23 @@ export const useContractsStore = defineStore('contracts', {
       this.updateLoading({connect: true});
 
       try {
+        /** When the user clicks Connect always open the MetaMask account picker. eth_requestAccounts alone skips it once the site has been permitted */
+        if (pickAccount) {
+          try {
+            await this.provider.request({
+              method: 'wallet_requestPermissions',
+              params: [{eth_accounts: {}}]
+            });
+          } catch (error) {
+            /** The user closed the account picker */
+            if ((error as any).code === 4001) {
+              throw error;
+            }
+
+            /** Wallets that don't support the permissions request continue with eth_requestAccounts */
+          }
+        }
+
         /** Extract the metamask account's address and display it */
         await this.provider.request({method: 'eth_requestAccounts'});
         const accounts = await this.web3.eth.getAccounts();
@@ -495,7 +535,7 @@ export const useContractsStore = defineStore('contracts', {
         /** Extract the balance of the current chain in USDT */
         await this.getBalance();
 
-        /** Make a connection to the Vault Smart Contract - Check if the metamask address has already made a contract. In case it hasn't, create a new Vault contract. Finally, save the contract to the global state */
+        /** Make a connection to the Vault Smart Contract - Check if the metamask address owns a Vault contract. If it does save the contract to the global state, otherwise show the "No vault found" screen */
         await this.connectContract();
       } catch (error) {
         if ((error as any).code !== 4902) {
@@ -530,20 +570,81 @@ export const useContractsStore = defineStore('contracts', {
     },
 
     disconnectMetamask() {
+      /** Account and vault */
       this.contractIndex = 0;
       this.connectedAccount = '';
+      this.allAccounts = [];
       this.vaultAddress = '';
-      this.balance = '';
-      this.contractBalance = {
-        eth: 0,
-        usdt: 0
-      };
+      this.availableVaults = [];
       this.vaultContract = null;
+      this.vaultMissing = false;
       this.factoryContracts = [];
-      this.vaultBalance = null;
-      this.daysOffset = TODAY_TIME;
       sessionStorage.removeItem('firstSign');
+
+      /** Balances and currencies */
+      this.resetBalance();
+      this.usdc = {contract: null, balance: 0};
+      this.xaut = {contract: null, balance: 0};
+      this.tokens = this.activeChain ? [this.activeChain.currencies[0]] : [];
+      this.currencyToken = this.activeChain?.currencies[0].value ?? '';
+
+      /** Withdrawals */
+      this.daysOffset = TODAY_TIME;
+      this.withdrawalRequests = [];
+      this.thresholdPrompt = '';
       this.resetWithdrawalsList();
+
+      /** Modals and forms */
+      this.updateModal({
+        connect: false,
+        withdrawConnected: false,
+        withdrawExternal: false,
+        cancelWithdraw: false,
+        completeWithdraw: false,
+        overtime: false
+      });
+      this.updateError({
+        external: false,
+        connected: false,
+        externalAddress: false
+      });
+      this.updateWallet('connected', {step: 1});
+      this.updateWallet('external', {step: 1});
+      this.updateFormField(null, 'connected', 'amount');
+      this.updateFormField(null, 'external', 'amount');
+      this.updateFormField('', 'external', 'address');
+      this.updateLoading({
+        balance: false,
+        history: false,
+        withdrawConnected: false,
+        withdrawExternal: false,
+        withdraw: false,
+        cancelWithdraw: false,
+        completeWithdraw: false
+      });
+    },
+
+    async disconnectWallet() {
+      /** Clear the local state first so the app shows the disconnected screen right away */
+      this.disconnectMetamask();
+      this.firstSign = false;
+
+      if (!this.provider) {
+        return;
+      }
+
+      try {
+        /** Remove the site's access to the accounts in MetaMask. MetaMask then emits accountsChanged with an empty list, which keeps the disconnected screen and doesn't prompt again */
+        await this.provider.request({
+          method: 'wallet_revokePermissions',
+          params: [{eth_accounts: {}}]
+        });
+      } catch (error) {
+        console.error(
+          'Error revoking MetaMask permissions: ',
+          (error as Error).message
+        );
+      }
     },
 
     updateNetwork() {
@@ -582,7 +683,7 @@ export const useContractsStore = defineStore('contracts', {
         await this.estimateBlocksPerHour();
 
         /** If the user has not made the first connection to the metamask wallet end propagation */
-        if (!this.vaultContract) {
+        if (!this.vaultContract && !this.vaultMissing) {
           return;
         }
 
@@ -601,10 +702,20 @@ export const useContractsStore = defineStore('contracts', {
       }
 
       this.provider.on('accountsChanged', (accounts: string[]) => {
-        /** If the accounts array is empty clear the state and show the disconnected state on app */
+        /** The connect flow reads the selected account itself once the MetaMask account picker is closed */
+        if (this.loading.connect) {
+          return;
+        }
+
         this.contractIndex = 0;
         this.updateModal({connect: false});
         this.disconnectMetamask();
+
+        /** If the accounts array is empty the wallet was disconnected in MetaMask, show the disconnected state on app */
+        if (!accounts.length) {
+          return;
+        }
+
         this.connectMetamask();
       });
     },
@@ -671,6 +782,7 @@ export const useContractsStore = defineStore('contracts', {
           .balanceOf(this.vaultAddress)
           .call()) as bigint;
         this.usdc.balance = formatUint256toNumber(usdcBalance);
+
         if (this.usdc.balance) {
           this.tokens = [
             ...this.tokens,
@@ -692,7 +804,9 @@ export const useContractsStore = defineStore('contracts', {
           .balanceOf(this.vaultAddress)
           .call()) as bigint;
         this.xaut.balance = formatUint256toNumber(xautBalance);
-        if (this.xaut.balance) {
+
+        /** XAUT0 is always offered on Avalanche */
+        if (this.xaut.balance || this.activeChain.id === 43114) {
           this.tokens = [
             ...this.tokens,
             {
@@ -711,7 +825,8 @@ export const useContractsStore = defineStore('contracts', {
 
         /** Check if the currency token currently active still has balance in the vault. If not reset the selection to the first item in the currency array */
         const currencyTokenActive = this.tokens.some(
-          (item) => item.value === this.currencyToken
+          (item) =>
+            item.value.toLowerCase() === this.currencyToken.toLowerCase()
         );
         if (!currencyTokenActive) {
           this.currencyToken = this.tokens[0].value;
@@ -869,7 +984,7 @@ export const useContractsStore = defineStore('contracts', {
         return;
       }
 
-      if (this.contractBalance.usdt < this.form.connected.amount.value) {
+      if (this.selectedBalance < this.form.connected.amount.value) {
         return;
       }
 
@@ -898,6 +1013,19 @@ export const useContractsStore = defineStore('contracts', {
       try {
         /** On amount screen call the "withdrawRequest" method from the Vault SC. On success the withdraw request is pending for an hour before the user can complete it */
         if (this.wallets.connected.step === 1) {
+          /** Check in the Vault SC that no withdrawal request is open right before making a new one */
+          if (await this.getOpenReservation()) {
+            this.updateModal({withdrawConnected: false});
+            this.resetConnectedForm();
+            bottomToast(
+              'You can not create multiple withdrawal requests. Confirm or cancel the existing withdrawal to create a new one.',
+              5000,
+              'toast__wide toast__withdrawal'
+            );
+            this.updateHistoryList();
+            return;
+          }
+
           /** Fetch estimated gas */
           await this.getEstimatedGas(this.vaultContract, method, [
             this.currencyToken,
@@ -937,11 +1065,8 @@ export const useContractsStore = defineStore('contracts', {
 
         if (method === 'withdraw') {
           bottomToast(
-            `Withdraw to: ${this.connectedAccount.substring(
-              0,
-              4
-            )}...${this.connectedAccount.slice(
-              -4
+            `Withdraw to: ${shortenAddress(
+              this.connectedAccount
             )} has been successfully completed.`,
             3000,
             'toast__wide toast__withdrawal'
@@ -975,10 +1100,7 @@ export const useContractsStore = defineStore('contracts', {
         return;
       }
 
-      if (
-        this.currencyToken === this.activeChain.currencies[0].value &&
-        this.contractBalance.usdt < this.form.external.amount.value
-      ) {
+      if (this.selectedBalance < this.form.external.amount.value) {
         return;
       }
 
@@ -1013,6 +1135,19 @@ export const useContractsStore = defineStore('contracts', {
         }
 
         if (this.wallets.external.step === 2) {
+          /** Check in the Vault SC that no withdrawal request is open right before making a new one */
+          if (await this.getOpenReservation()) {
+            this.updateModal({withdrawExternal: false});
+            this.resetExternalForm();
+            bottomToast(
+              'You can not create multiple withdrawal requests. Confirm or cancel the existing withdrawal to create a new one.',
+              5000,
+              'toast__wide toast__withdrawal'
+            );
+            this.updateHistoryList();
+            return;
+          }
+
           /** Fetch estimated gas */
           await this.getEstimatedGas(this.vaultContract, method, [
             this.currencyToken,
@@ -1045,6 +1180,9 @@ export const useContractsStore = defineStore('contracts', {
           }
         }
 
+        /** Init the recipient before the form gets reset, it is used in the success toast */
+        const recipient = this.form.external.address.value;
+
         /** Close the modal and reset the form  */
         this.updateModal({withdrawExternal: false});
         this.updateFormField(null, 'external', 'amount');
@@ -1053,11 +1191,8 @@ export const useContractsStore = defineStore('contracts', {
 
         if (method === 'withdraw') {
           bottomToast(
-            `Withdraw to: ${this.connectedAccount.substring(
-              0,
-              4
-            )}...${this.connectedAccount.slice(
-              -4
+            `Withdraw to: ${shortenAddress(
+              recipient
             )} has been successfully completed.`,
             3000,
             'toast__wide toast__withdrawal'
@@ -1140,6 +1275,130 @@ export const useContractsStore = defineStore('contracts', {
       }
     },
 
+    async getOpenReservation(): Promise<IOpenReservation | null> {
+      if (
+        !this.vaultContract ||
+        !this.activeChain ||
+        !this.factoryContracts.length
+      ) {
+        return null;
+      }
+
+      const factory = this.factoryContracts[this.contractIndex];
+
+      /** Single-token vaults (Polygon): the vault keeps one reservation, for the protocol token */
+      if (!factory.methods['getAllAvailableWhitelistedTokens']) {
+        const reservation: IReservation =
+          await this.vaultContract.methods[
+            this.activeChain.reservationCall
+          ]().call();
+
+        if (BigInt(reservation.amount) <= 0n) {
+          return null;
+        }
+
+        return {
+          token: this.activeChain.currencies[0].value,
+          amount: BigInt(reservation.amount),
+          unlockTime: BigInt(reservation.unlockTime)
+        };
+      }
+
+      /** Multi-token vaults (Avalanche): check the reservation of every whitelisted token */
+      const whitelistedTokens: string[] =
+        await factory.methods['getAllAvailableWhitelistedTokens']().call();
+
+      for (let index = 0; index < whitelistedTokens.length; index++) {
+        const whitelistedToken: IWhitelistedToken =
+          await factory.methods['getAvailableWhitelistedTokenByIndex'](
+            index
+          ).call();
+
+        const reservation: IReservation = await this.vaultContract.methods[
+          'getWithdrawPaymentTokenReservationByTokenId'
+        ](Number(whitelistedToken.tokenId)).call();
+
+        if (BigInt(reservation.amount) > 0n) {
+          return {
+            token: whitelistedToken.tokenAddress,
+            amount: BigInt(reservation.amount),
+            unlockTime: BigInt(reservation.unlockTime)
+          };
+        }
+      }
+
+      return null;
+    },
+
+    async findBlockByTimestamp(timestamp: number) {
+      if (!this.web3) {
+        return 0;
+      }
+
+      /** Binary search for the first block with a timestamp equal or higher than the provided one */
+      let low = 0;
+      let high = this.lastBlock || Number(await this.web3.eth.getBlockNumber());
+
+      while (low < high) {
+        const middle = Math.floor((low + high) / 2);
+        const block = await this.web3.eth.getBlock(middle);
+
+        if (Number(block.timestamp) < timestamp) {
+          low = middle + 1;
+        } else {
+          high = middle;
+        }
+      }
+
+      return low;
+    },
+
+    async findWithdrawRequestEvent(
+      reservation: IOpenReservation,
+      lockDuration: bigint
+    ) {
+      if (!this.activeChain) {
+        return;
+      }
+
+      const matchesReservation = (item: IVaultEvent<IWithdrawRequestData>) =>
+        item.returnValues.token.toLowerCase() ===
+          reservation.token.toLowerCase() &&
+        BigInt(item.returnValues.unlockTime) === reservation.unlockTime;
+
+      /** First look in the events of the selected history period */
+      await this.getWithdrawRequests();
+      const recentRequest = this.withdrawalRequests
+        .filter(matchesReservation)
+        .at(-1);
+
+      if (recentRequest) {
+        return recentRequest;
+      }
+
+      /** Older request: find the block it was made in from its unlock time and search one day of blocks around it */
+      const requestBlock = await this.findBlockByTimestamp(
+        Number(reservation.unlockTime) - Number(lockDuration)
+      );
+      const web3Instance = new Web3(this.rpc.url);
+      const vaultContract = new web3Instance.eth.Contract(
+        this.activeChain.vaultAbi,
+        this.vaultAddress
+      );
+      const toBlock = requestBlock + this.blocksOffset;
+
+      const requests = (await (vaultContract as any).getPastEvents(
+        'WithdrawRequest',
+        {
+          fromBlock: Math.max(requestBlock - this.blocksOffset, 0),
+          toBlock:
+            this.lastBlock && toBlock < this.lastBlock ? toBlock : 'latest'
+        }
+      )) as IVaultEvent<IWithdrawRequestData>[];
+
+      return requests.filter(matchesReservation).at(-1);
+    },
+
     async getActiveRequest() {
       if (
         !this.factoryContracts.length ||
@@ -1153,63 +1412,13 @@ export const useContractsStore = defineStore('contracts', {
       try {
         this.activeRequest = null;
 
-        /** Fetch withdraw requests from the WithdrawRequest event */
-        await this.getWithdrawRequests();
-
-        /** Take the latest WithdrawalRequest event as the active request */
-        const latestRequest = this.withdrawalRequests?.at(-1);
-
-        /** Initialize latest reserved amount */
-        let latestReservedAmount = 0;
-
-        if (latestRequest) {
-          const factory = this.factoryContracts[this.contractIndex];
-
-          if (factory.methods['getAllAvailableWhitelistedTokens']) {
-            /** Multi-token vaults (Avalanche): look up the reservation by token id */
-            const whitelistedTokens: string[] =
-              await factory.methods[
-                'getAllAvailableWhitelistedTokens'
-              ]().call();
-
-            const tokenIndex = whitelistedTokens.findIndex(
-              (token) =>
-                token.toLowerCase() ===
-                latestRequest.returnValues.token.toLowerCase()
-            );
-
-            if (tokenIndex === -1) {
-              return;
-            }
-
-            const latestWhitelistedToken: IWhitelistedToken =
-              await factory.methods['getAvailableWhitelistedTokenByIndex'](
-                tokenIndex
-              ).call();
-
-            const tokenData: IVaultBalance = await this.vaultContract.methods[
-              'getPaymentTokenBalancesByTokenId'
-            ](Number(latestWhitelistedToken.tokenId)).call();
-
-            latestReservedAmount = Number(tokenData.withdrawalReservation);
-          } else {
-            /** Single-token vaults (Polygon): read the reservation directly */
-            const reservation: IReservation =
-              await this.vaultContract.methods[
-                this.activeChain.reservationCall
-              ]().call();
-
-            latestReservedAmount = Number(reservation.amount);
-          }
-        }
+        /** The reservation saved in the Vault SC is the source of truth. Events are only fetched for the selected history period, so an older open request would be missed */
+        const reservation = await this.getOpenReservation();
 
         /** Stop propagation if no amount is reserved */
-        if (!latestReservedAmount || !latestRequest) {
+        if (!reservation) {
           return;
         }
-
-        /** Fetch the reserved withdrawal request amount and unlock time from the smart contract */
-        const reservationAmount = Number(latestRequest.returnValues.amount);
 
         /** Fetch a lock duration of the withdrawal request from the factory contract */
         const lockDuration: bigint =
@@ -1217,68 +1426,45 @@ export const useContractsStore = defineStore('contracts', {
             this.activeChain.reservationLockCall
           ]().call();
 
-        /** When there are no reserved funds reset the active request and stop propagation */
-        if (reservationAmount <= 0) {
-          this.activeRequest = null;
-          return;
-        }
+        /** The reservation doesn't hold the recipient address. It is read from the transaction of the WithdrawRequest event. If it can't be found the request is still kept (so it blocks new requests and can be cancelled) but it can't be completed */
+        let recipient: string | null = null;
 
-        /** Check if more than time has passed than the amount of lock duration, which means the request is ready to be completed by the user */
-        const thresholdPassed =
-          Date.now() > Number(latestRequest.returnValues.unlockTime) * 1000;
+        try {
+          const request = await this.findWithdrawRequestEvent(
+            reservation,
+            lockDuration
+          );
 
-        /** If for whatever reason the public indexer doesn't work, open a prompt notifying the user he has an outstanding withdrawal request */
-        if (thresholdPassed && !latestRequest) {
-          this.thresholdPrompt =
-            'We have detected you have an outstanding withdrawal request. Please note that a small gas fee is required to cancel your withdrawal.';
-          this.updateModal({overtime: true});
-          return;
-        }
+          if (request) {
+            const transaction = await this.web3.eth.getTransaction(
+              request.transactionHash
+            );
 
-        /** In order to access the recipient address used as a second argument in withdrawRequest method, we need to first access the transaction from the web3. The transactionHash used to index a transaction can be found in the emitted event WithdrawRequest */
-        const blockRequest = (await this.web3.eth.getBlock(
-          latestRequest.blockNumber,
-          true
-        )) as IBlock;
-
-        /** Extract the active request by comparing block transaction's hash to the latest withdrawal request event's hash */
-        const activeRequestTransaction = blockRequest.transactions.find(
-          (item) => item.hash === latestRequest.transactionHash
-        );
-
-        /** Stop propagation if no transaction is found */
-        if (!activeRequestTransaction) {
-          return;
-        }
-
-        const recipient = this.extractWithdrawRequestRecipient(
-          activeRequestTransaction.input,
-          latestRequest.returnValues.token,
-          latestRequest.returnValues.amount
-        );
-
-        /** Keep the request (so it can be cancelled) but block completing without a verified recipient */
-        if (!recipient) {
+            recipient = this.extractWithdrawRequestRecipient(
+              transaction.input,
+              request.returnValues.token,
+              request.returnValues.amount
+            );
+          }
+        } catch (error) {
           console.error(
-            'Could not find recipient for withdraw request',
-            latestRequest.transactionHash
+            'Could not find recipient for withdraw request: ',
+            (error as Error).message
           );
         }
 
-        /** By default, the unlockTime fetched from the SC is of type bigint. Once converted to the number it shows the time in seconds. First we need to multiply it with 1000 to convert it to milliseconds, then we can use Date to mutate it */
+        /** The unlockTime fetched from the SC is in seconds. First we need to multiply it with 1000 to convert it to milliseconds, then we can use Date to mutate it */
         this.activeRequest = {
           address: recipient ?? '',
-          amount: formatUint256toNumber(latestRequest.returnValues.amount),
+          amount: formatUint256toNumber(reservation.amount),
           date: new Date(
-            (Number(latestRequest.returnValues.unlockTime) -
-              Number(lockDuration)) *
-              1000
+            (Number(reservation.unlockTime) - Number(lockDuration)) * 1000
           ),
           status:
-            Number(latestRequest.returnValues.unlockTime) * 1000 < Date.now()
+            Number(reservation.unlockTime) * 1000 < Date.now()
               ? 'ready'
               : 'pending',
-          token: latestRequest.returnValues.token
+          token: reservation.token
         };
 
         /** If more than ten days have passed since making withdrawal request, prompt the user to either cancel or complete withdrawal request */
@@ -1615,7 +1801,7 @@ export const useContractsStore = defineStore('contracts', {
       const loadingToast = toast.loading('Connecting to the contract...');
 
       try {
-        /** Check if the currently connected wallet address already created a Vault smart contract. Stop propagation if so, otherwise create a new Vault smart contract. */
+        /** Check on every factory contract of the chain if the connected wallet address owns a Vault smart contract */
         const available = (await Promise.all(
           this.factoryContracts.map(async (factory) => ({
             factory: factory,
@@ -1632,58 +1818,22 @@ export const useContractsStore = defineStore('contracts', {
         );
 
         this.availableVaults = availableVaults.map((item) => item.vaultAddress);
-        const availableFactories = availableVaults.map((item) => item.factory);
 
         /** Set the vault address of the current address (if there are multiple there is a selector in UI) */
-        if (availableFactories.length > 0) {
-          this.vaultAddress = await availableFactories[
-            this.contractIndex
-          ].methods
-            .getVaultAddressByOwner(this.connectedAccount)
-            .call();
-        }
+        this.vaultAddress = this.availableVaults[this.contractIndex] ?? '';
 
-        const vaultExists =
-          validateAddress(this.vaultAddress) && parseInt(this.vaultAddress, 16);
-
-        /** If the Vault contract has already been created stop propagation otherwise proceed to Vault creation */
-        if (vaultExists) {
-          await this.setVaultContract(this.vaultAddress);
-          toast.remove(loadingToast);
+        /** The app never creates a vault. If the connected wallet doesn't own one on this chain show the "No vault found" screen */
+        if (!this.vaultAddress) {
+          this.vaultContract = null;
+          this.resetBalance();
+          this.resetWithdrawalsList();
+          this.updateLoading({history: false});
+          this.vaultMissing = true;
           return;
         }
 
-        /** Fetch estimated gas */
-        await this.getEstimatedGas(
-          this.factoryContracts[this.contractIndex],
-          'createVault',
-          [this.connectedAccount]
-        );
-
-        /** Make a request to "createVault" method on the factory contract to create a new Vault contract that will connect to the wallet address and the user will be able to withdraw funds from */
-        const factoryTransaction = await this.factoryContracts[
-          this.contractIndex
-        ].methods
-          .createVault(this.connectedAccount)
-          .send({
-            from: this.connectedAccount,
-            gas: `${this.transactionGas.gas}`,
-            maxFeePerGas: `${this.transactionGas.maxFeePerGas}`,
-            maxPriorityFeePerGas: `${this.transactionGas.maxPriorityFeePerGas}`
-          });
-
-        if (!factoryTransaction.events) {
-          throw new Error(
-            'Something went wrong while creating the Vault contract. Try again.'
-          );
-        }
-
-        await this.setVaultContract(
-          factoryTransaction.events.ContractInitialized.address
-        );
-
-        toast.remove(loadingToast);
-        toast.success(`Vault contract successfully created`);
+        this.vaultMissing = false;
+        await this.setVaultContract(this.vaultAddress);
       } catch (error) {
         toast.remove(loadingToast);
         this.disconnectMetamask();
@@ -1763,11 +1913,8 @@ export const useContractsStore = defineStore('contracts', {
         this.updateModal({completeWithdraw: false});
         this.updateModal({overtime: false});
         bottomToast(
-          `Withdraw to: ${this.activeRequest.address.substring(
-            0,
-            4
-          )}...${this.activeRequest.address.slice(
-            -4
+          `Withdraw to: ${shortenAddress(
+            this.activeRequest.address
           )} has been successfully completed.`,
           3000,
           'toast__wide toast__withdrawal'

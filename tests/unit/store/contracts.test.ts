@@ -105,6 +105,42 @@ describe('contracts store', () => {
         expect(store.selectedCurrency).toBe(polygonChain.currencies[0].name);
       });
     });
+
+    describe('selectedBalance', () => {
+      it('is zero when no chain is active', () => {
+        const store = useContractsStore();
+        expect(store.selectedBalance).toBe(0);
+      });
+
+      it('returns the balance of the selected currency', () => {
+        const store = useContractsStore();
+        store.activeChain = polygonChain;
+        store.contractBalance = {eth: 0, usdt: 12.5};
+        store.usdc = {contract: null, balance: 3};
+        store.xaut = {contract: null, balance: 0.0002};
+
+        store.currencyToken = polygonChain.currencies[0].value;
+        expect(store.selectedBalance).toBe(12.5);
+
+        /** Token addresses are compared case-insensitively */
+        store.currencyToken = polygonChain.currencies[1].value.toLowerCase();
+        expect(store.selectedBalance).toBe(3);
+
+        store.currencyToken = polygonChain.currencies[2].value;
+        expect(store.selectedBalance).toBe(0.0002);
+      });
+    });
+
+    describe('showCurrencySwitch', () => {
+      it('is hidden with one token and shown with several', () => {
+        const store = useContractsStore();
+        store.tokens = [polygonChain.currencies[0]];
+        expect(store.showCurrencySwitch).toBe(false);
+
+        store.tokens = [polygonChain.currencies[0], polygonChain.currencies[2]];
+        expect(store.showCurrencySwitch).toBe(true);
+      });
+    });
   });
 
   describe('initializeWeb3', () => {
@@ -303,8 +339,74 @@ describe('contracts store', () => {
       expect(store.balance).toBe('');
       expect(store.contractBalance).toEqual({eth: 0, usdt: 0});
       expect(store.vaultContract).toBeNull();
-      expect(store.factoryContract).toBeNull();
+      expect(store.factoryContracts).toEqual([]);
       expect(sessionStorage.getItem('firstSign')).toBeNull();
+    });
+  });
+
+  describe('disconnectWallet', () => {
+    it('clears local state and revokes the site access in MetaMask', async () => {
+      const store = useContractsStore();
+      const provider = makeProvider();
+      provider.request.mockResolvedValue(null);
+      store.provider = provider;
+      store.connectedAccount = '0xabc';
+      store.firstSign = true;
+
+      await store.disconnectWallet();
+
+      expect(store.connectedAccount).toBe('');
+      expect(store.firstSign).toBe(false);
+      expect(provider.request).toHaveBeenCalledWith({
+        method: 'wallet_revokePermissions',
+        params: [{eth_accounts: {}}]
+      });
+    });
+
+    it('still disconnects locally when the wallet cannot revoke', async () => {
+      const store = useContractsStore();
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const provider = makeProvider();
+      provider.request.mockRejectedValue(new Error('unsupported'));
+      store.provider = provider;
+      store.connectedAccount = '0xabc';
+
+      await store.disconnectWallet();
+
+      expect(store.connectedAccount).toBe('');
+    });
+  });
+
+  describe('accountsChanged', () => {
+    const setup = async () => {
+      const store = useContractsStore();
+      const provider = makeProvider();
+      mockGetChainId.mockResolvedValue(137n);
+      await store.initializeWeb3(provider);
+      const handler = provider.on.mock.calls.find(
+        (call) => call[0] === 'accountsChanged'
+      )![1] as (accounts: string[]) => void;
+      const connectSpy = vi.spyOn(store, 'connectMetamask').mockResolvedValue();
+      store.connectedAccount = '0xabc';
+
+      return {store, handler, connectSpy};
+    };
+
+    it('shows the disconnected state without prompting when no account is left', async () => {
+      const {store, handler, connectSpy} = await setup();
+
+      handler([]);
+
+      expect(store.connectedAccount).toBe('');
+      expect(connectSpy).not.toHaveBeenCalled();
+    });
+
+    it('reconnects without the account picker when another account is selected', async () => {
+      const {handler, connectSpy} = await setup();
+
+      handler(['0xdef']);
+
+      expect(connectSpy).toHaveBeenCalledWith();
     });
   });
 
@@ -360,6 +462,28 @@ describe('contracts store', () => {
 
       expect(toast.error).toHaveBeenCalledWith('Please install MetaMask!');
     });
+
+    it('opens the MetaMask account picker only when asked to', async () => {
+      const store = useContractsStore();
+      const provider = makeProvider();
+      provider.request.mockResolvedValue(null);
+      store.provider = provider;
+      store.activeChain = polygonChain;
+      store.web3 = {
+        eth: {getAccounts: vi.fn().mockResolvedValue([])}
+      } as never;
+      const permissionsRequest = {
+        method: 'wallet_requestPermissions',
+        params: [{eth_accounts: {}}]
+      };
+
+      await store.connectMetamask();
+      expect(provider.request).not.toHaveBeenCalledWith(permissionsRequest);
+
+      await store.connectMetamask(true);
+      expect(provider.request).toHaveBeenCalledWith(permissionsRequest);
+      expect(store.loading.connect).toBe(false);
+    });
   });
 
   describe('connectContract', () => {
@@ -373,7 +497,114 @@ describe('contracts store', () => {
       expect(toast.error).toHaveBeenCalledWith(
         'Switch to either Polygon and Avalanche chain'
       );
-      expect(store.factoryContract).toBeNull();
+      expect(store.factoryContracts).toEqual([]);
+    });
+
+    it('shows the no-vault state instead of creating a vault', async () => {
+      const store = useContractsStore();
+      const createVault = vi.fn();
+      class MockContract {
+        methods = {
+          getVaultAddressByOwner: vi.fn(() => ({
+            call: vi
+              .fn()
+              .mockResolvedValue('0x0000000000000000000000000000000000000000')
+          })),
+          createVault
+        };
+      }
+      store.web3 = {eth: {Contract: MockContract}} as never;
+      store.activeChain = polygonChain;
+      store.connectedAccount = '0xabc';
+
+      await store.connectContract();
+
+      expect(store.vaultMissing).toBe(true);
+      expect(store.vaultContract).toBeNull();
+      expect(store.connectedAccount).toBe('0xabc');
+      expect(createVault).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getOpenReservation', () => {
+    const callable = (value: unknown) =>
+      vi.fn(() => ({call: vi.fn().mockResolvedValue(value)}));
+
+    it('returns null without a vault contract', async () => {
+      const store = useContractsStore();
+      expect(await store.getOpenReservation()).toBeNull();
+    });
+
+    it('reads the single reservation on Polygon', async () => {
+      const store = useContractsStore();
+      store.activeChain = polygonChain;
+      store.factoryContracts = [{methods: {}}] as never;
+      store.vaultContract = {
+        methods: {
+          [polygonChain.reservationCall]: callable({
+            amount: 5_000_000n,
+            unlockTime: 1_700_000_000n
+          })
+        }
+      } as never;
+
+      expect(await store.getOpenReservation()).toEqual({
+        token: polygonChain.currencies[0].value,
+        amount: 5_000_000n,
+        unlockTime: 1_700_000_000n
+      });
+    });
+
+    it('returns null when the Polygon reservation is empty', async () => {
+      const store = useContractsStore();
+      store.activeChain = polygonChain;
+      store.factoryContracts = [{methods: {}}] as never;
+      store.vaultContract = {
+        methods: {
+          [polygonChain.reservationCall]: callable({amount: 0n, unlockTime: 0n})
+        }
+      } as never;
+
+      expect(await store.getOpenReservation()).toBeNull();
+    });
+
+    it('finds the reserved token among the whitelisted tokens on Avalanche', async () => {
+      const store = useContractsStore();
+      store.activeChain = avaxChain;
+      store.factoryContracts = [
+        {
+          methods: {
+            getAllAvailableWhitelistedTokens: callable(['0xaaa', '0xbbb']),
+            getAvailableWhitelistedTokenByIndex: vi.fn((index: number) => ({
+              call: vi.fn().mockResolvedValue({
+                tokenId: BigInt(index + 1),
+                tokenAddress: index === 0 ? '0xaaa' : '0xbbb'
+              })
+            }))
+          }
+        }
+      ] as never;
+      store.vaultContract = {
+        methods: {
+          getWithdrawPaymentTokenReservationByTokenId: vi.fn(
+            (tokenId: number) => ({
+              call: vi
+                .fn()
+                .mockResolvedValue(
+                  tokenId === 2
+                    ? {amount: 7n, unlockTime: 9n}
+                    : {amount: 0n, unlockTime: 0n}
+                )
+            })
+          )
+        }
+      } as never;
+
+      expect(await store.getOpenReservation()).toEqual({
+        token: '0xbbb',
+        amount: 7n,
+        unlockTime: 9n
+      });
     });
   });
 
@@ -415,6 +646,29 @@ describe('contracts store', () => {
       await store.submitConnectedForm();
 
       expect(resetSpy).toHaveBeenCalledOnce();
+    });
+
+    it('does not send a new request while a reservation is open', async () => {
+      const store = useContractsStore();
+      const withdrawRequest = vi.fn();
+      store.vaultContract = {methods: {withdrawRequest}} as never;
+      store.activeChain = polygonChain;
+      store.contractBalance = {eth: 0, usdt: 500};
+      store.updateFormField(100, 'connected', 'amount');
+      store.updateModal({withdrawConnected: true});
+      vi.spyOn(store, 'getOpenReservation').mockResolvedValue({
+        token: '0xabc',
+        amount: 1n,
+        unlockTime: 1n
+      });
+      vi.spyOn(store, 'getWithdrawalHistory').mockResolvedValue();
+
+      await store.submitConnectedForm();
+
+      expect(withdrawRequest).not.toHaveBeenCalled();
+      expect(store.modal.withdrawConnected).toBe(false);
+      expect(store.form.connected.amount.value).toBeNull();
+      expect(toast).toHaveBeenCalled();
     });
   });
 

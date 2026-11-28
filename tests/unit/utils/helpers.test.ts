@@ -8,6 +8,7 @@ import {
   formatWithAtLeastTwoDecimals,
   isMobileChrome,
   localizeDateTime,
+  shortenAddress,
   validateAddress
 } from '@/utils/helpers.ts';
 
@@ -45,6 +46,10 @@ describe('formatUint256toNumber', () => {
 
   it('handles amounts below one base unit of display precision', () => {
     expect(formatUint256toNumber(1n)).toBeCloseTo(0.000001, 9);
+  });
+
+  it('returns the exact decimal value without float noise', () => {
+    expect(formatUint256toNumber(12_894_056n)).toBe(12.894056);
   });
 });
 
@@ -116,6 +121,23 @@ describe('validateAddress', () => {
   });
 });
 
+describe('shortenAddress', () => {
+  const address = '0x9ac93245367975b06013C1EE0204A5E42e91b57B';
+
+  it('keeps the first six and last four characters by default', () => {
+    expect(shortenAddress(address)).toBe('0x9ac9••••b57B');
+  });
+
+  it('respects custom lengths', () => {
+    expect(shortenAddress(address, 4, 2)).toBe('0x9a••••7B');
+  });
+
+  it('returns short or empty values untouched', () => {
+    expect(shortenAddress('0x1234')).toBe('0x1234');
+    expect(shortenAddress('')).toBe('');
+  });
+});
+
 describe('formatWithAtLeastTwoDecimals', () => {
   it('pads an integer to two decimals', () => {
     expect(formatWithAtLeastTwoDecimals(5)).toBe('5.00');
@@ -125,16 +147,19 @@ describe('formatWithAtLeastTwoDecimals', () => {
     expect(formatWithAtLeastTwoDecimals(5.5)).toBe('5.50');
   });
 
-  it('returns the value untouched when it already has two decimals', () => {
-    expect(formatWithAtLeastTwoDecimals(5.55)).toBe(5.55);
+  it('keeps up to six decimals', () => {
+    expect(formatWithAtLeastTwoDecimals(5.55)).toBe('5.55');
+    expect(formatWithAtLeastTwoDecimals(1.234567)).toBe('1.234567');
+    expect(formatWithAtLeastTwoDecimals(0.0002)).toBe('0.0002');
   });
 
-  it('returns the value untouched when it has more than two decimals', () => {
-    expect(formatWithAtLeastTwoDecimals(1.234567)).toBe(1.234567);
+  it('rounds to six decimals and drops float noise', () => {
+    expect(formatWithAtLeastTwoDecimals(12.894055999999999)).toBe('12.894056');
   });
 
-  it('handles zero', () => {
+  it('handles zero and null', () => {
     expect(formatWithAtLeastTwoDecimals(0)).toBe('0.00');
+    expect(formatWithAtLeastTwoDecimals(null)).toBe('0.00');
   });
 });
 
